@@ -16,5 +16,5 @@ timm>=0.9.0
 # FLOPs hesaplama
 fvcore>=0.1.5
 
-# ConvKAN
-torch-conv-kan>=0.1.0
+# ConvKAN (PyPI'da yok, GitHub'dan kurulur — bkz. scripts/install_convkan.sh)
+# pip install git+https://github.com/IvanDrokin/torch-conv-kan.git
