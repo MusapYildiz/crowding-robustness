@@ -1,0 +1,70 @@
+data:
+  coco_dir: "./coco"                  # COCO root dizini
+  output_dir: "./dataset"             # Oluşturulan görsellerin kaydedileceği yer
+  annotation_file: "instances_train2017.json"
+
+  categories:
+    - elephant
+    - giraffe
+    - zebra
+    - bear
+    - airplane
+    - bicycle
+    - fire_hydrant
+    - stop_sign
+    - banana
+    - broccoli
+
+  # Dışarıdan flanker için kullanılacak kategoriler (veri setinden tamamen farklı)
+  external_flanker_categories:
+    - cat
+    - dog
+    - horse
+    - sheep
+    - cow
+
+  split:
+    train_ratio: 0.6       # instance'ların %60'ı train
+    val_ratio: 0.1         # %10 validation
+    test_ratio: 0.3        # %30 test
+    random_seed: 42
+
+  samples_per_condition: 50  # her koşul için kaç görsel
+
+image:
+  canvas_size: 224           # canvas genişliği ve yüksekliği (kare)
+  object_size: 80            # nesne ve flanker boyutu (kare)
+  background_color: 0        # 0 = siyah, 255 = beyaz
+  min_bbox_area: 1600        # minimum bounding box alanı (40x40 px), küçük instance'ları filtreler
+
+spacing:
+  pixels_per_degree: 40      # 1° = 40px (60cm izleme mesafesi, 96 PPI varsayımı)
+  degrees: [1, 2, 4, 8]     # test edilecek spacing seviyeleri
+  measurement: "center_to_center"
+
+flanker:
+  types:
+    - same_class             # aynı sınıftan farklı instance
+    - different_class        # veri setindeki farklı sınıf
+    - external               # veri setinin tamamen dışından
+  positions: ["left", "right"]
+  allow_partial: true        # canvas dışına taşan flanker kırpılır, koşul geçerli
+
+training:
+  models: ["resnet50", "vit_b_16", "convkan"]
+  pretrained: true
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0001
+  optimizer: "adam"
+  early_stopping_patience: 5
+  num_workers: 4
+  device: "cuda"             # "cpu" veya "cuda"
+
+evaluation:
+  metrics:
+    - accuracy_drop
+    - spacing_accuracy_curve
+    - per_class_accuracy
+    - flanker_type_effect
+  results_dir: "./results"
