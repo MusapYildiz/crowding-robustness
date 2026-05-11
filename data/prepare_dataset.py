@@ -97,65 +97,57 @@ def split_instances(instances: list, train_ratio: float, val_ratio: float,
     }
 
 
-def extract_masked_object(image: np.ndarray, ann: dict, coco: COCO) -> np.ndarray | None:
+def extract_masked_object(image: np.ndarray, ann: dict, coco: COCO):
     """
     Segmentasyon maskesi kullanarak nesneyi arka plandan temizler.
-    RGBA görsel döndürür: RGB=nesne pikselleri, A=maske.
+    Döndürür: (crop_bgr, binary_mask) tuple veya None.
     """
     h_img, w_img = image.shape[:2]
 
     # Maske oluştur
-    rle = coco.annToRLE(ann)
-    binary_mask = mask_utils.decode(rle).astype(np.uint8)  # (H, W)
+    rle         = coco.annToRLE(ann)
+    binary_mask = mask_utils.decode(rle).astype(np.uint8)
 
-    # Bounding box
-    x, y, w, h = [int(v) for v in ann["bbox"]]
-    x2, y2 = min(x + w, w_img), min(y + h, h_img)
+    # Bounding box — float -> int
+    x, y, w, h = ann["bbox"]
+    x, y       = int(x), int(y)
+    w, h       = max(int(w), 1), max(int(h), 1)
+    x2, y2     = min(x + w, w_img), min(y + h, h_img)
 
     if x2 <= x or y2 <= y:
         return None
 
-    # Crop
     crop_rgb  = image[y:y2, x:x2]
     crop_mask = binary_mask[y:y2, x:x2]
 
     if crop_rgb.size == 0 or crop_mask.sum() == 0:
         return None
 
-    # RGBA
-    crop_rgba = np.zeros((*crop_rgb.shape[:2], 4), dtype=np.uint8)
-    crop_rgba[:, :, :3] = crop_rgb
-    crop_rgba[:, :, 3]  = crop_mask * 255
-
-    return crop_rgba
+    return crop_rgb, crop_mask
 
 
-def place_on_canvas(rgba_object: np.ndarray, object_size: int,
+def place_on_canvas(obj_tuple, object_size: int,
                     canvas_size: int, bg_color: int) -> np.ndarray:
     """
-    RGBA nesneyi object_size'a resize eder,
-    canvas_size × canvas_size uniform background'un merkezine yerleştirir.
+    (crop_bgr, crop_mask) tuple alinir:
+      - object_size x object_size'a resize edilir
+      - canvas_size x canvas_size uniform background'un merkezine yerlestirilir
+      - Sadece maske pikselleri canvas'a kopyalanir
     Döndürür: (canvas_size, canvas_size, 3) uint8 BGR görsel.
     """
-    # Resize
-    resized = cv2.resize(rgba_object, (object_size, object_size),
-                         interpolation=cv2.INTER_AREA)
+    crop_rgb, crop_mask = obj_tuple
 
-    # Canvas oluştur
+    resized_obj  = cv2.resize(crop_rgb,  (object_size, object_size),
+                              interpolation=cv2.INTER_AREA)
+    resized_mask = cv2.resize(crop_mask, (object_size, object_size),
+                              interpolation=cv2.INTER_NEAREST)
+
     canvas = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
-
-    # Merkeze yerleştir
     offset = (canvas_size - object_size) // 2
-    x0, y0 = offset, offset
-    x1, y1 = x0 + object_size, y0 + object_size
 
-    # Alpha blending
-    obj_rgb   = resized[:, :, :3]
-    obj_alpha = resized[:, :, 3:4].astype(np.float32) / 255.0
-
-    roi = canvas[y0:y1, x0:x1].astype(np.float32)
-    blended = obj_rgb.astype(np.float32) * obj_alpha + roi * (1.0 - obj_alpha)
-    canvas[y0:y1, x0:x1] = blended.astype(np.uint8)
+    roi = canvas[offset:offset+object_size, offset:offset+object_size]
+    roi[resized_mask > 0] = resized_obj[resized_mask > 0]
+    canvas[offset:offset+object_size, offset:offset+object_size] = roi
 
     return canvas
 
