@@ -19,7 +19,13 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader
 
-from data.dataset import IsolationDataset, CrowdingDataset, default_transform
+def _get_dataset_classes(cfg):
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "coco":
+        from data.coco.dataset import IsolationDataset, CrowdingDataset, default_transform
+    else:
+        from data.dataset import IsolationDataset, CrowdingDataset, default_transform
+    return IsolationDataset, CrowdingDataset, default_transform
 from models.resnet  import build_resnet
 from models.vit     import build_vit
 from models.convkan import build_convkan
@@ -160,8 +166,13 @@ def confusion_matrix(records, num_classes):
 def evaluate_model(model_name, cfg, device, results_dir):
     print(f"\n{'='*60}\n  Değerlendirme: {model_name}\n{'='*60}")
 
-    target_ids    = cfg["data"]["target_obj_ids"]
-    num_classes   = len(target_ids)
+    dataset_type  = cfg["data"].get("dataset", "coil100")
+    if dataset_type == "coco":
+        target_ids  = cfg["data"]["categories"]
+        num_classes = len(target_ids)
+    else:
+        target_ids  = cfg["data"]["target_obj_ids"]
+        num_classes = len(target_ids)
     dataset_dir   = cfg["data"]["output_dir"]
     composite_dir = str(Path(dataset_dir) / "composites")
     batch_size    = cfg["training"]["batch_size"]
@@ -179,6 +190,7 @@ def evaluate_model(model_name, cfg, device, results_dir):
     transform = default_transform(canvas_size)
 
     # Isolation baseline
+    IsolationDataset, CrowdingDataset, default_transform = _get_dataset_classes(cfg)
     iso_ds  = IsolationDataset(dataset_dir, "test", target_ids, transform)
     iso_loader = DataLoader(iso_ds, batch_size=batch_size,
                             shuffle=False, num_workers=num_workers)

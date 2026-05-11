@@ -17,10 +17,19 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import yaml
 
-from data.dataset import get_dataloaders
 from models.resnet  import build_resnet,  unfreeze_resnet
 from models.vit     import build_vit,     unfreeze_vit
 from models.convkan import build_convkan, unfreeze_convkan
+
+
+def get_dataloaders(cfg: dict):
+    """Config'e gore dogru dataset modulunu yukler."""
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "coco":
+        from data.coco.dataset import get_dataloaders as _get
+    else:
+        from data.dataset import get_dataloaders as _get
+    return _get(cfg)
 
 
 MODEL_REGISTRY = {
@@ -166,7 +175,11 @@ def train_model(model_name: str, cfg: dict,
 
     train_cfg   = cfg["training"]
     canvas_size = cfg["image"]["canvas_size"]
-    num_classes = len(cfg["data"]["target_obj_ids"])
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "coco":
+        num_classes = len(cfg["data"]["categories"])
+    else:
+        num_classes = len(cfg["data"]["target_obj_ids"])
 
     model = build_model(model_name, num_classes,
                         train_cfg["pretrained"], True).to(device)

@@ -1,0 +1,77 @@
+data:
+  dataset: "coco"
+  coco_dir: "./coco"
+  output_dir: "./dataset_coco"
+  annotation_file: "instances_train2017.json"
+
+  categories:
+    - elephant
+    - giraffe
+    - zebra
+    - bear
+    - airplane
+    - bicycle
+    - fire_hydrant
+    - stop_sign
+    - banana
+    - broccoli
+
+  external_flanker_categories:
+    - cat
+    - dog
+    - horse
+    - sheep
+    - cow
+
+  split:
+    train_ratio: 0.6
+    val_ratio: 0.1
+    test_ratio: 0.3
+    random_seed: 42
+
+  samples_per_condition: 50
+
+image:
+  canvas_size: 224
+  object_size: 80
+  background_color: 128     # gri — literatür standardı
+  min_bbox_area: 1600       # 40x40 px minimum
+  min_mask_ratio: 0.15      # bbox alanının en az %15i maske olmalı
+  min_color_std: 8.0        # masked crop renk std — çok koyu instance elenir
+
+spacing:
+  pixels_per_degree: 40
+  degrees: [2, 2.2, 2.5, 2.7, 3]
+  measurement: "center_to_center"
+
+flanker:
+  types:
+    - same_class
+    - different_class
+    - external
+  positions: ["left", "right"]
+  same_flanker_both_sides: true
+  allow_partial: true
+
+training:
+  models: ["resnet34", "resnet50", "resnet101", "vit_s_16", "vit_b_16",
+           "convkan_s", "convkan_m", "convkan_l"]
+  pretrained: true
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0001
+  optimizer: "adam"
+  early_stopping_patience: 5
+  num_workers: 4
+  device: "cuda"
+
+evaluation:
+  metrics:
+    - accuracy_drop
+    - spacing_accuracy_curve
+    - per_class_accuracy
+    - flanker_type_effect
+    - ece
+    - confusion_matrix
+    - robustness_index
+  results_dir: "./results_coco"
