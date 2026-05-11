@@ -34,7 +34,7 @@ data:
 image:
   canvas_size: 224           # canvas genişliği ve yüksekliği (kare)
   object_size: 80            # nesne ve flanker boyutu (kare)
-  background_color: 0        # 0 = siyah, 255 = beyaz
+  background_color: 128      # 128 = orta gri (literatür standardı)
   min_bbox_area: 1600        # minimum bounding box alanı (40x40 px), küçük instance'ları filtreler
 
 spacing:

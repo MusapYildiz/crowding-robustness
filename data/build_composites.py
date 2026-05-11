@@ -111,26 +111,40 @@ def build_composite(target_path: Path, left_flanker_path: Path,
                     bg_color: int) -> np.ndarray:
     """
     Hedef + sol flanker + sağ flanker kompozit görselini oluşturur.
+    Görseller zaten prepare_dataset.py tarafından doğru formatta oluşturulmuş:
+    canvas_size x canvas_size, nesne merkeze yerleştirilmiş.
+    Kompozitte sadece flanker görselleri hedef etrafına yerleştirilir.
     """
-    target_img  = load_image(target_path)
-    left_img    = load_image(left_flanker_path)
-    right_img   = load_image(right_flanker_path)
+    target_img = load_image(target_path)
+    left_img   = load_image(left_flanker_path)
+    right_img  = load_image(right_flanker_path)
 
+    if target_img is None or left_img is None or right_img is None:
+        return None
+
+    # Canvas oluştur
     canvas = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
-
     center = canvas_size // 2
 
-    # Hedef: merkeze
+    # Hedef nesneyi merkeze yerleştir (tüm canvas boyutunda geldi)
     half = object_size // 2
     t0, t1 = center - half, center + half
-    canvas[t0:t1, t0:t1] = target_img[t0:t1, t0:t1]
 
-    # Sol flanker merkezi: target_center_x - spacing_px
+    # Target görselinin nesne bölgesini al (offset hesabı)
+    offset = (canvas_size - object_size) // 2
+    target_obj = target_img[offset:offset+object_size, offset:offset+object_size]
+    canvas[t0:t1, t0:t1] = target_obj
+
+    # Flanker görsellerinin nesne bölgelerini al
+    left_obj  = left_img[offset:offset+object_size, offset:offset+object_size]
+    right_obj = right_img[offset:offset+object_size, offset:offset+object_size]
+
+    # Sol ve sağ flanker merkezleri
     left_cx  = center - spacing_px
     right_cx = center + spacing_px
 
-    canvas = place_flanker(canvas, left_img,  left_cx,  center, object_size)
-    canvas = place_flanker(canvas, right_img, right_cx, center, object_size)
+    canvas = place_flanker(canvas, left_obj,  left_cx,  center, object_size)
+    canvas = place_flanker(canvas, right_obj, right_cx, center, object_size)
 
     return canvas
 

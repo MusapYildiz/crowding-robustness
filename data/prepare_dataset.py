@@ -126,21 +126,49 @@ def extract_masked_object(image: np.ndarray, ann: dict, coco: COCO):
     return crop_rgb, crop_mask
 
 
+def resize_keep_aspect(crop_rgb: np.ndarray, crop_mask: np.ndarray,
+                        object_size: int, bg_color: int) -> tuple:
+    """
+    Aspect ratio koruyarak resize eder.
+    En uzun kenar object_size olacak şekilde scale eder,
+    kısa kenar padding ile doldurulur.
+    Döndürür: (resized_obj, resized_mask) her ikisi de object_size x object_size.
+    """
+    h, w = crop_rgb.shape[:2]
+    scale = object_size / max(h, w)
+    new_w = max(int(w * scale), 1)
+    new_h = max(int(h * scale), 1)
+
+    resized_obj  = cv2.resize(crop_rgb,  (new_w, new_h), interpolation=cv2.INTER_AREA)
+    resized_mask = cv2.resize(crop_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+    # Padding — merkeze yerleştir
+    pad_top  = (object_size - new_h) // 2
+    pad_left = (object_size - new_w) // 2
+
+    padded_obj  = np.full((object_size, object_size, 3), bg_color, dtype=np.uint8)
+    padded_mask = np.zeros((object_size, object_size), dtype=np.uint8)
+
+    padded_obj[pad_top:pad_top+new_h, pad_left:pad_left+new_w]  = resized_obj
+    padded_mask[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized_mask
+
+    return padded_obj, padded_mask
+
+
 def place_on_canvas(obj_tuple, object_size: int,
                     canvas_size: int, bg_color: int) -> np.ndarray:
     """
     (crop_bgr, crop_mask) tuple alinir:
-      - object_size x object_size'a resize edilir
+      - Aspect ratio korunarak object_size x object_size'a resize edilir
       - canvas_size x canvas_size uniform background'un merkezine yerlestirilir
       - Sadece maske pikselleri canvas'a kopyalanir
     Döndürür: (canvas_size, canvas_size, 3) uint8 BGR görsel.
     """
     crop_rgb, crop_mask = obj_tuple
 
-    resized_obj  = cv2.resize(crop_rgb,  (object_size, object_size),
-                              interpolation=cv2.INTER_AREA)
-    resized_mask = cv2.resize(crop_mask, (object_size, object_size),
-                              interpolation=cv2.INTER_NEAREST)
+    resized_obj, resized_mask = resize_keep_aspect(
+        crop_rgb, crop_mask, object_size, bg_color
+    )
 
     canvas = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
     offset = (canvas_size - object_size) // 2
