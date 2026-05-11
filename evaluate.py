@@ -1,7 +1,7 @@
 """
 evaluate.py
 
-E�itilmiş modelleri crowding test seti üzerinde değerlendirir.
+Eğitilmiş modelleri crowding test seti üzerinde değerlendirir.
 
 Kullanım:
     python evaluate.py --config configs/config.yaml
