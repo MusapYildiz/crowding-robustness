@@ -1,342 +1,205 @@
 """
 build_composites.py
 
-Hazırlanan nesne görsellerinden crowding test kompozitleri oluşturur.
+COIL-100 isolation görsellerinden crowding kompozitleri üretir.
 
-Her test görseli:
-  - Merkeze hedef nesne (target)
-  - Soluna ve sağına flanker (spacing: 1°, 2°, 4°, 8°)
-
-Flanker tipleri:
-  1. same_class    : hedef ile aynı kategoriden, farklı instance
-  2. different_class: veri setindeki farklı kategori
-  3. external      : external_flanker_categories'den
+- Sol ve sağ flanker: aynı instance (same_flanker_both_sides=true)
+- Flanker her spacing seviyesinde sabit kalır (aynı instance)
+- Leakage kontrolü: flanker pool train setinden seçilmez
 
 Kullanım:
     python data/build_composites.py --config configs/config.yaml
 """
 
-import os
-import json
-import random
-import argparse
+import json, random, argparse, shutil
+import cv2
 import numpy as np
 from pathlib import Path
-from itertools import combinations
-
-import cv2
 import yaml
-from tqdm import tqdm
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r") as f:
+def load_config(path: str) -> dict:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
-def load_manifest(dataset_dir: Path, split: str) -> dict:
-    path = dataset_dir / f"{split}_manifest.json"
-    with open(path, "r") as f:
-        return json.load(f)
+def get_pool(dataset_dir: Path, split: str, obj_id: int) -> list:
+    d = dataset_dir / split / f"obj{obj_id}"
+    return sorted(d.glob("*.png")) if d.exists() else []
 
 
-def get_image_pool(dataset_dir: Path, split: str, category: str) -> list:
-    """Bir kategorinin split'indeki tüm görsel yollarını döndürür."""
-    cat_dir = dataset_dir / split / category
-    if not cat_dir.exists():
-        return []
-    return sorted(cat_dir.glob("*.png"))
-
-
-def build_image_pools(dataset_dir: Path, split: str, categories: list,
-                      external_categories: list) -> dict:
-    """
-    Tüm kategoriler için görsel pool'larını hazırlar.
-    {category_name: [Path, Path, ...]}
-    """
-    pools = {}
-    all_cats = categories + external_categories
-    for cat in all_cats:
-        pools[cat] = get_image_pool(dataset_dir, split, cat)
-    return pools
-
-
-def degrees_to_pixels(degrees: float, pixels_per_degree: float) -> int:
-    return int(round(degrees * pixels_per_degree))
-
-
-def load_image(path: Path) -> np.ndarray:
-    img = cv2.imread(str(path))
-    return img
-
-
-def place_flanker(canvas: np.ndarray, flanker_img: np.ndarray,
-                  center_x: int, center_y: int, object_size: int) -> np.ndarray:
-    """
-    Flanker'ı canvas üzerine yerleştirir.
-    center_x, center_y: flanker'ın merkez koordinatları.
-    Canvas dışına taşan kısımlar kırpılır (partial flanker).
-    """
-    canvas_h, canvas_w = canvas.shape[:2]
-    half = object_size // 2
-
-    # Flanker koordinatları (canvas koordinatlarında)
-    fx0 = center_x - half
-    fy0 = center_y - half
-    fx1 = fx0 + object_size
-    fy1 = fy0 + object_size
-
-    # Flanker crop sınırları (canvas dışına taşarsa kırp)
-    cx0 = max(fx0, 0)
-    cy0 = max(fy0, 0)
-    cx1 = min(fx1, canvas_w)
-    cy1 = min(fy1, canvas_h)
-
-    if cx0 >= cx1 or cy0 >= cy1:
-        return canvas  # tamamen dışarıda, bir şey yapma
-
-    # Flanker üzerindeki karşılık gelen bölge
-    src_x0 = cx0 - fx0
-    src_y0 = cy0 - fy0
-    src_x1 = src_x0 + (cx1 - cx0)
-    src_y1 = src_y0 + (cy1 - cy0)
-
-    canvas[cy0:cy1, cx0:cx1] = flanker_img[src_y0:src_y1, src_x0:src_x1]
-    return canvas
-
-
-def build_composite(target_path: Path, left_flanker_path: Path,
-                    right_flanker_path: Path, spacing_px: int,
-                    canvas_size: int, object_size: int,
-                    bg_color: int) -> np.ndarray:
-    """
-    Hedef + sol flanker + sağ flanker kompozit görselini oluşturur.
-    Görseller zaten prepare_dataset.py tarafından doğru formatta oluşturulmuş:
-    canvas_size x canvas_size, nesne merkeze yerleştirilmiş.
-    Kompozitte sadece flanker görselleri hedef etrafına yerleştirilir.
-    """
-    target_img = load_image(target_path)
-    left_img   = load_image(left_flanker_path)
-    right_img  = load_image(right_flanker_path)
-
-    if target_img is None or left_img is None or right_img is None:
-        return None
-
-    # Canvas oluştur
-    canvas = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
-    center = canvas_size // 2
-
-    # Hedef nesneyi merkeze yerleştir (tüm canvas boyutunda geldi)
-    half = object_size // 2
-    t0, t1 = center - half, center + half
-
-    # Target görselinin nesne bölgesini al (offset hesabı)
-    offset = (canvas_size - object_size) // 2
-    target_obj = target_img[offset:offset+object_size, offset:offset+object_size]
-    canvas[t0:t1, t0:t1] = target_obj
-
-    # Flanker görsellerinin nesne bölgelerini al
-    left_obj  = left_img[offset:offset+object_size, offset:offset+object_size]
-    right_obj = right_img[offset:offset+object_size, offset:offset+object_size]
-
-    # Sol ve sağ flanker merkezleri
-    left_cx  = center - spacing_px
-    right_cx = center + spacing_px
-
-    canvas = place_flanker(canvas, left_obj,  left_cx,  center, object_size)
-    canvas = place_flanker(canvas, right_obj, right_cx, center, object_size)
-
-    return canvas
-
-
-def select_flanker(target_ann_id: str, target_category: str,
-                   flanker_type: str, pools: dict,
-                   categories: list, external_categories: list,
-                   rng: random.Random) -> Path | None:
-    """
-    Flanker tipi ve kurallara göre bir flanker görsel seçer.
-    - same_class: aynı kategori, farklı instance (farklı dosya adı)
-    - different_class: farklı kategori (veri setinden)
-    - external: external_flanker_categories'den
-    """
-    if flanker_type == "same_class":
-        pool = [p for p in pools[target_category]
-                if p.stem != target_ann_id]
-        if not pool:
-            return None
-        return rng.choice(pool)
-
-    elif flanker_type == "different_class":
-        other_cats = [c for c in categories if c != target_category]
-        if not other_cats:
-            return None
-        chosen_cat = rng.choice(other_cats)
-        pool = pools.get(chosen_cat, [])
-        if not pool:
-            return None
-        return rng.choice(pool)
-
-    elif flanker_type == "external":
-        chosen_cat = rng.choice(external_categories)
-        pool = pools.get(chosen_cat, [])
-        if not pool:
-            return None
-        return rng.choice(pool)
-
-    return None
-
-
-def validate_no_leakage(dataset_dir: Path, split: str) -> None:
-    """
-    Flanker olarak kullanılacak pool'un (test/val) ile
-    train manifest'inin hiç kesişmediğini doğrular.
-
-    Her instance dosya adı = ann_id.png
-    Train manifest'indeki ann_id'ler ile split pool'undaki ann_id'ler
-    aynı anda bulunamaz.
-
-    Hata varsa RuntimeError fırlatır, program durur.
-    """
-    train_manifest_path = dataset_dir / "train_manifest.json"
-    split_manifest_path = dataset_dir / f"{split}_manifest.json"
-
-    if not train_manifest_path.exists():
-        raise FileNotFoundError(f"Train manifest bulunamadı: {train_manifest_path}")
-    if not split_manifest_path.exists():
-        raise FileNotFoundError(f"{split} manifest bulunamadı: {split_manifest_path}")
-
-    with open(train_manifest_path) as f:
-        train_ids = set(json.load(f).keys())  # ann_id string set
-
-    with open(split_manifest_path) as f:
-        split_ids = set(json.load(f).keys())
-
-    overlap = train_ids & split_ids
-
+def validate_no_leakage(dataset_dir: Path, split: str):
+    train_keys = set(json.load(open(dataset_dir / "train_manifest.json")).keys())
+    split_keys = set(json.load(open(dataset_dir / f"{split}_manifest.json")).keys())
+    overlap    = train_keys & split_keys
     if overlap:
         raise RuntimeError(
-            f"\n[LEAKAGE DETECTED] {len(overlap)} instance hem train hem {split} "
-            f"split'inde bulunuyor!\n"
-            f"Örnek çakışan ann_id'ler: {list(overlap)[:10]}\n"
-            f"Pipeline durduruluyor — lütfen split mantığını kontrol edin."
+            f"[LEAKAGE] train ∩ {split} = {len(overlap)} — "
+            f"örnek: {list(overlap)[:5]}"
         )
-
-    print(f"  [OK] Leakage kontrolü geçti: train ∩ {split} = ∅ "
-          f"(train={len(train_ids)}, {split}={len(split_ids)})")
+    print(f"  [OK] train ∩ {split} = ∅ ({len(split_keys)} instance)")
 
 
-def build_split_composites(split: str, dataset_dir: Path, output_dir: Path,
-                           cfg: dict, rng: random.Random):
-    """
-    Bir split (test/val) için tüm kompozit görsellerini oluşturur.
-    Sadece test ve val için composite oluşturulur —
-    train seti zaten tek nesneli (isolation) görsellerden oluşur.
-    """
-    categories          = cfg["data"]["categories"]
-    external_categories = cfg["data"]["external_flanker_categories"]
-    flanker_types       = cfg["flanker"]["types"]
-    spacing_degrees     = cfg["spacing"]["degrees"]
-    pixels_per_degree   = cfg["spacing"]["pixels_per_degree"]
-    samples             = cfg["data"]["samples_per_condition"]
-    canvas_size         = cfg["image"]["canvas_size"]
-    object_size         = cfg["image"]["object_size"]
-    bg_color            = cfg["image"]["background_color"]
+def select_flanker(target_key: str, target_obj_id: int,
+                   flanker_type: str, split: str,
+                   dataset_dir: Path, target_ids: list,
+                   external_ids: list, rng: random.Random):
+    if flanker_type == "same_class":
+        pool = [p for p in get_pool(dataset_dir, split, target_obj_id)
+                if p.stem != target_key]
 
-    pools = build_image_pools(dataset_dir, split, categories, external_categories)
+    elif flanker_type == "different_class":
+        others = [o for o in target_ids if o != target_obj_id]
+        obj    = rng.choice(others)
+        pool   = get_pool(dataset_dir, split, obj)
 
-    for target_cat in tqdm(categories, desc=f"[{split}] Kategoriler"):
-        target_pool = pools[target_cat]
-        if len(target_pool) < samples:
-            print(f"  [WARN] {target_cat}: yeterli görsel yok "
-                  f"({len(target_pool)} < {samples}), mevcut kadarıyla devam edilecek.")
+    elif flanker_type == "external":
+        obj  = rng.choice(external_ids)
+        pool = get_pool(dataset_dir, split, obj)
 
-        # Her koşul için samples kadar hedef seç
-        chosen_targets = rng.choices(target_pool, k=min(samples, len(target_pool)))
+    else:
+        return None
 
-        for flanker_type in flanker_types:
-            for deg in spacing_degrees:
-                spacing_px = degrees_to_pixels(deg, pixels_per_degree)
-
-                # Çıktı dizini: output/split/target_cat/flanker_type/deg/
-                cond_dir = (output_dir / split / target_cat /
-                            flanker_type / f"{deg}deg")
-                cond_dir.mkdir(parents=True, exist_ok=True)
-
-                saved = 0
-                for target_path in chosen_targets:
-                    target_ann_id = target_path.stem
-
-                    left_path = select_flanker(
-                        target_ann_id, target_cat, flanker_type,
-                        pools, categories, external_categories, rng
-                    )
-                    right_path = select_flanker(
-                        target_ann_id, target_cat, flanker_type,
-                        pools, categories, external_categories, rng
-                    )
-
-                    if left_path is None or right_path is None:
-                        continue
-
-                    composite = build_composite(
-                        target_path, left_path, right_path,
-                        spacing_px, canvas_size, object_size, bg_color
-                    )
-
-                    out_path = cond_dir / f"{target_ann_id}.png"
-                    cv2.imwrite(str(out_path), composite)
-                    saved += 1
-
-                print(f"  {split}/{target_cat}/{flanker_type}/{deg}°: {saved} görsel")
+    return rng.choice(pool) if pool else None
 
 
-def build_composite_manifest(composite_dir: Path, output_dir: Path, split: str):
-    """
-    Oluşturulan kompozit görsellerinin metadata'sını JSON olarak kaydeder.
-    """
-    manifest = []
-    for img_path in sorted(composite_dir.rglob("*.png")):
-        parts = img_path.relative_to(composite_dir / split).parts
-        if len(parts) < 4:
-            continue
-        target_cat, flanker_type, deg_str, filename = parts
-        manifest.append({
-            "path":          str(img_path),
-            "target_class":  target_cat,
-            "flanker_type":  flanker_type,
-            "spacing_deg":   float(deg_str.replace("deg", "")),
-            "ann_id":        Path(filename).stem,
-        })
+def place_flanker_on_canvas(canvas: np.ndarray, flanker_img: np.ndarray,
+                             center_x: int, center_y: int,
+                             obj_size: int, bg_threshold: int = 20) -> np.ndarray:
+    """Flanker nesnesini canvas üzerine yerleştirir. Siyah pikseller kopyalanmaz."""
+    h, w  = canvas.shape[:2]
+    half  = obj_size // 2
+    fx0, fy0 = center_x - half, center_y - half
+    fx1, fy1 = fx0 + obj_size, fy0 + obj_size
 
-    out_path = output_dir / f"{split}_composite_manifest.json"
-    with open(out_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"  Composite manifest: {out_path} ({len(manifest)} görsel)")
+    cx0, cy0 = max(fx0, 0), max(fy0, 0)
+    cx1, cy1 = min(fx1, w),  min(fy1, h)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return canvas
+
+    sx0 = cx0 - fx0
+    sy0 = cy0 - fy0
+    sx1 = sx0 + (cx1 - cx0)
+    sy1 = sy0 + (cy1 - cy0)
+
+    flanker_roi = flanker_img[sy0:sy1, sx0:sx1]
+    canvas_roi  = canvas[cy0:cy1, cx0:cx1]
+    mask        = np.any(flanker_roi > bg_threshold, axis=2)
+    canvas_roi[mask] = flanker_roi[mask]
+    canvas[cy0:cy1, cx0:cx1] = canvas_roi
+    return canvas
+
+
+def build_composite(target_path: Path, flanker_path: Path,
+                    spacing_px: int, canvas_size: int,
+                    object_size: int, bg_color: int) -> np.ndarray | None:
+    target_img  = cv2.imread(str(target_path))
+    flanker_img = cv2.imread(str(flanker_path))
+
+    if target_img is None or flanker_img is None:
+        return None
+
+    canvas  = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
+    center  = canvas_size // 2
+    half    = object_size // 2
+    offset  = (canvas_size - object_size) // 2
+
+    # Hedef — merkeze
+    target_obj = target_img[offset:offset+object_size, offset:offset+object_size]
+    canvas[center-half:center+half, center-half:center+half] = target_obj
+
+    # Flanker nesne bölgesi
+    flanker_obj = flanker_img[offset:offset+object_size, offset:offset+object_size]
+
+    # Sol ve sağ — aynı flanker
+    canvas = place_flanker_on_canvas(canvas, flanker_obj,
+                                      center - spacing_px, center, object_size)
+    canvas = place_flanker_on_canvas(canvas, flanker_obj,
+                                      center + spacing_px, center, object_size)
+    return canvas
 
 
 def main(config_path: str):
-    cfg = load_config(config_path)
-    dataset_dir = Path(cfg["data"]["output_dir"])
-    composite_dir = Path(cfg["data"]["output_dir"]) / "composites"
-    composite_dir.mkdir(parents=True, exist_ok=True)
+    cfg          = load_config(config_path)
+    dataset_dir  = Path(cfg["data"]["output_dir"])
+    comp_dir     = dataset_dir / "composites"
+    canvas_size  = cfg["image"]["canvas_size"]
+    object_size  = cfg["image"]["object_size"]
+    bg_color     = cfg["image"]["background_color"]
+    target_ids   = cfg["data"]["target_obj_ids"]
+    external_ids = cfg["data"]["external_obj_ids"]
+    flanker_types = cfg["flanker"]["types"]
+    spacings_deg  = cfg["spacing"]["degrees"]
+    pix_per_deg   = cfg["spacing"]["pixels_per_degree"]
+    samples       = cfg["data"]["samples_per_condition"]
+    seed          = cfg["data"]["split"]["random_seed"]
 
-    rng = random.Random(cfg["data"]["split"]["random_seed"])
+    rng = random.Random(seed)
 
-    # --- Leakage kontrolü: flanker pool'u train ile kesişmemeli ---
-    print("\nLeakage kontrolleri yapılıyor...")
+    if comp_dir.exists():
+        shutil.rmtree(comp_dir)
+
+    print("Leakage kontrolleri...")
     for split in ["val", "test"]:
         validate_no_leakage(dataset_dir, split)
 
     for split in ["val", "test"]:
-        print(f"\n=== {split.upper()} kompozitleri oluşturuluyor ===")
-        build_split_composites(split, dataset_dir, composite_dir, cfg, rng)
-        build_composite_manifest(composite_dir, composite_dir, split)
+        print(f"\n=== {split.upper()} ===")
+        manifest = []
+
+        for target_obj_id in target_ids:
+            target_pool = get_pool(dataset_dir, split, target_obj_id)
+            chosen      = rng.sample(target_pool, min(samples, len(target_pool)))
+
+            for flanker_type in flanker_types:
+                for target_path in chosen:
+                    target_key = target_path.stem
+
+                    # Flanker bir kez seç — tüm spacing'lerde sabit
+                    flanker_path = select_flanker(
+                        target_key, target_obj_id, flanker_type,
+                        split, dataset_dir, target_ids, external_ids, rng
+                    )
+                    if flanker_path is None:
+                        continue
+
+                    for deg in spacings_deg:
+                        spacing_px = int(deg * pix_per_deg)
+                        out_dir    = (comp_dir / split / f"obj{target_obj_id}"
+                                      / flanker_type / f"{deg}deg")
+                        out_dir.mkdir(parents=True, exist_ok=True)
+
+                        comp = build_composite(
+                            target_path, flanker_path,
+                            spacing_px, canvas_size, object_size, bg_color
+                        )
+                        if comp is None:
+                            continue
+
+                        out_path = out_dir / f"{target_key}.png"
+                        cv2.imwrite(str(out_path), comp)
+                        manifest.append({
+                            "path":         str(out_path),
+                            "target_obj":   target_obj_id,
+                            "flanker_type": flanker_type,
+                            "spacing_deg":  deg,
+                            "key":          target_key,
+                            "flanker_path": str(flanker_path),
+                        })
+
+            n = sum(1 for m in manifest if m["target_obj"] == target_obj_id)
+            print(f"  obj{target_obj_id}: {n} kompozit")
+
+        out_path = comp_dir / f"{split}_composite_manifest.json"
+        with open(out_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"  Toplam: {len(manifest)} kompozit")
 
     print("\nTamamlandı.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Crowding kompozit görseller oluştur")
-    parser.add_argument("--config", type=str, default="configs/config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
     main(args.config)

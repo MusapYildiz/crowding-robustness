@@ -1,57 +1,42 @@
 data:
-  coco_dir: "./coco"                  # COCO root dizini
-  output_dir: "./dataset"             # Oluşturulan görsellerin kaydedileceği yer
-  annotation_file: "instances_train2017.json"
+  dataset: "coil100"
+  coil_dir: "./coil100_raw/coil-100/coil-100"
+  output_dir: "./dataset_coil"
 
-  categories:
-    - elephant
-    - giraffe
-    - zebra
-    - bear
-    - airplane
-    - bicycle
-    - fire_hydrant
-    - stop_sign
-    - banana
-    - broccoli
-
-  # Dışarıdan flanker için kullanılacak kategoriler (veri setinden tamamen farklı)
-  external_flanker_categories:
-    - cat
-    - dog
-    - horse
-    - sheep
-    - cow
+  target_obj_ids: [2, 10, 16, 42, 43, 51, 66, 71, 79, 92]
+  external_obj_ids: [11, 56, 57, 73, 74]
 
   split:
-    train_ratio: 0.6       # instance'ların %60'ı train
-    val_ratio: 0.1         # %10 validation
-    test_ratio: 0.3        # %30 test
+    train_ratio: 0.6
+    val_ratio: 0.1
+    test_ratio: 0.3
     random_seed: 42
 
-  samples_per_condition: 50  # her koşul için kaç görsel
+  samples_per_condition: 50
 
 image:
-  canvas_size: 224           # canvas genişliği ve yüksekliği (kare)
-  object_size: 80            # nesne ve flanker boyutu (kare)
-  background_color: 128      # 128 = orta gri (literatür standardı)
-  min_bbox_area: 1600        # minimum bounding box alanı (40x40 px), küçük instance'ları filtreler
+  canvas_size: 224
+  object_size: 80
+  background_color: 0       # siyah — COIL-100 ile seamless
+  bg_threshold: 40          # siyah background maskeleme eşiği
 
 spacing:
-  pixels_per_degree: 40      # 1° = 40px (60cm izleme mesafesi, 96 PPI varsayımı)
-  degrees: [1, 2, 4, 8]     # test edilecek spacing seviyeleri
+  pixels_per_degree: 40
+  degrees: [2, 2.2, 2.5, 2.7, 3]
   measurement: "center_to_center"
 
 flanker:
   types:
-    - same_class             # aynı sınıftan farklı instance
-    - different_class        # veri setindeki farklı sınıf
-    - external               # veri setinin tamamen dışından
+    - same_class
+    - different_class
+    - external
   positions: ["left", "right"]
-  allow_partial: true        # canvas dışına taşan flanker kırpılır, koşul geçerli
+  same_flanker_both_sides: true   # sol ve sağ aynı flanker instance
+  allow_partial: true
 
 training:
-  models: ["resnet50", "vit_b_16", "convkan"]
+  models: ["resnet34", "resnet50", "resnet101", "vit_s_16", "vit_b_16",
+           "convkan_s", "convkan_m", "convkan_l"]
   pretrained: true
   epochs: 30
   batch_size: 32
@@ -59,7 +44,7 @@ training:
   optimizer: "adam"
   early_stopping_patience: 5
   num_workers: 4
-  device: "cuda"             # "cpu" veya "cuda"
+  device: "cuda"
 
 evaluation:
   metrics:
@@ -67,4 +52,7 @@ evaluation:
     - spacing_accuracy_curve
     - per_class_accuracy
     - flanker_type_effect
+    - ece
+    - confusion_matrix
+    - robustness_index
   results_dir: "./results"

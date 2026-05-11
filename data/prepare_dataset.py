@@ -1,308 +1,170 @@
 """
 prepare_dataset.py
 
-COCO 2017'den hedef kategorilerin instance'larını okur,
-instance bazlı strict split uygular (train/val/test),
-her instance'ı segmentasyon maskesiyle arka plandan temizler,
-uniform background üzerine sabit boyutta kaydeder.
+COIL-100 veri setinden isolation görseller üretir.
+- Siyah background threshold ile maskelenir
+- Aspect ratio korunarak resize edilir
+- Uniform siyah canvas'a yerleştirilir
+- Instance bazlı strict split (train/val/test)
 
 Kullanım:
     python data/prepare_dataset.py --config configs/config.yaml
 """
 
-import os
-import json
-import random
-import argparse
+import os, json, random, argparse
+import cv2
 import numpy as np
 from pathlib import Path
-from collections import defaultdict
-
-import cv2
 import yaml
-from pycocotools.coco import COCO
-from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r") as f:
+def load_config(path: str) -> dict:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
-def get_category_ids(coco: COCO, category_names: list) -> dict:
-    """Kategori adlarından COCO category ID'lerini döndürür."""
-    name_to_id = {}
-    for name in category_names:
-        # config'deki alt çizgileri boşluğa çevir (fire_hydrant -> fire hydrant)
-        coco_name = name.replace("_", " ")
-        cats = coco.getCatIds(catNms=[coco_name])
-        if not cats:
-            print(f"  [WARN] Kategori bulunamadı: '{coco_name}', atlanıyor.")
-            continue
-        name_to_id[name] = cats[0]
-        print(f"  '{coco_name}' -> category_id={cats[0]}")
-    return name_to_id
+def remove_dark_bg(img_bgr: np.ndarray, threshold: int = 40) -> np.ndarray:
+    """Koyu background piksellerini maskeler."""
+    gray   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+    kernel  = np.ones((5, 5), np.uint8)
+    mask    = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask    = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+    return mask
 
 
-def collect_instances(coco: COCO, category_id: int, min_bbox_area: int) -> list:
+def crop_to_object(img_bgr: np.ndarray,
+                   mask: np.ndarray) -> tuple:
+    """Maskeye göre nesnenin bounding box'ını kırpar."""
+    coords = cv2.findNonZero(mask)
+    if coords is None:
+        return img_bgr, mask
+    x, y, w, h = cv2.boundingRect(coords)
+    return img_bgr[y:y+h, x:x+w], mask[y:y+h, x:x+w]
+
+
+def place_on_canvas(img_bgr: np.ndarray, mask: np.ndarray,
+                    object_size: int, canvas_size: int,
+                    bg_color: int) -> np.ndarray:
     """
-    Bir kategori için tüm geçerli annotation'ları toplar.
-    Minimum alan filtresi uygular.
-    Her instance: {ann_id, image_id, bbox, segmentation, area}
+    Aspect ratio koruyarak resize + sadece maske pikselleri canvas'a koy.
     """
-    ann_ids = coco.getAnnIds(catIds=[category_id], iscrowd=False)
-    anns = coco.loadAnns(ann_ids)
+    h, w   = img_bgr.shape[:2]
+    scale  = object_size / max(h, w)
+    new_w  = max(int(w * scale), 1)
+    new_h  = max(int(h * scale), 1)
 
-    instances = []
-    for ann in anns:
-        x, y, w, h = ann["bbox"]
-        area = w * h
-        if area < min_bbox_area:
-            continue
-        if w < 1 or h < 1:
-            continue
-        instances.append({
-            "ann_id":       ann["id"],
-            "image_id":     ann["image_id"],
-            "bbox":         ann["bbox"],       # [x, y, w, h]
-            "segmentation": ann["segmentation"],
-            "area":         area,
-            "category_id":  category_id,
-        })
-    return instances
+    resized_obj  = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    resized_mask = cv2.resize(mask,    (new_w, new_h), interpolation=cv2.INTER_NEAREST)
 
+    canvas   = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
+    offset_y = (canvas_size - new_h) // 2
+    offset_x = (canvas_size - new_w) // 2
 
-def split_instances(instances: list, train_ratio: float, val_ratio: float,
-                    test_ratio: float, seed: int) -> dict:
-    """
-    Instance bazlı strict split.
-    Aynı instance train, val ve test'te aynı anda yer alamaz.
-    """
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
-        "Oranların toplamı 1 olmalı."
-
-    rng = random.Random(seed)
-    shuffled = instances[:]
-    rng.shuffle(shuffled)
-
-    n = len(shuffled)
-    n_train = int(n * train_ratio)
-    n_val   = int(n * val_ratio)
-
-    return {
-        "train": shuffled[:n_train],
-        "val":   shuffled[n_train:n_train + n_val],
-        "test":  shuffled[n_train + n_val:],
-    }
-
-
-def extract_masked_object(image: np.ndarray, ann: dict, coco: COCO):
-    """
-    Segmentasyon maskesi kullanarak nesneyi arka plandan temizler.
-    Döndürür: (crop_bgr, binary_mask) tuple veya None.
-    """
-    h_img, w_img = image.shape[:2]
-
-    # Maske oluştur
-    rle         = coco.annToRLE(ann)
-    binary_mask = mask_utils.decode(rle).astype(np.uint8)
-
-    # Bounding box — float -> int
-    x, y, w, h = ann["bbox"]
-    x, y       = int(x), int(y)
-    w, h       = max(int(w), 1), max(int(h), 1)
-    x2, y2     = min(x + w, w_img), min(y + h, h_img)
-
-    if x2 <= x or y2 <= y:
-        return None
-
-    crop_rgb  = image[y:y2, x:x2]
-    crop_mask = binary_mask[y:y2, x:x2]
-
-    if crop_rgb.size == 0 or crop_mask.sum() == 0:
-        return None
-
-    return crop_rgb, crop_mask
-
-
-def resize_keep_aspect(crop_rgb: np.ndarray, crop_mask: np.ndarray,
-                        object_size: int, bg_color: int) -> tuple:
-    """
-    Aspect ratio koruyarak resize eder.
-    En uzun kenar object_size olacak şekilde scale eder,
-    kısa kenar padding ile doldurulur.
-    Döndürür: (resized_obj, resized_mask) her ikisi de object_size x object_size.
-    """
-    h, w = crop_rgb.shape[:2]
-    scale = object_size / max(h, w)
-    new_w = max(int(w * scale), 1)
-    new_h = max(int(h * scale), 1)
-
-    resized_obj  = cv2.resize(crop_rgb,  (new_w, new_h), interpolation=cv2.INTER_AREA)
-    resized_mask = cv2.resize(crop_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-
-    # Padding — merkeze yerleştir
-    pad_top  = (object_size - new_h) // 2
-    pad_left = (object_size - new_w) // 2
-
-    padded_obj  = np.full((object_size, object_size, 3), bg_color, dtype=np.uint8)
-    padded_mask = np.zeros((object_size, object_size), dtype=np.uint8)
-
-    padded_obj[pad_top:pad_top+new_h, pad_left:pad_left+new_w]  = resized_obj
-    padded_mask[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized_mask
-
-    return padded_obj, padded_mask
-
-
-def place_on_canvas(obj_tuple, object_size: int,
-                    canvas_size: int, bg_color: int) -> np.ndarray:
-    """
-    (crop_bgr, crop_mask) tuple alinir:
-      - Aspect ratio korunarak object_size x object_size'a resize edilir
-      - canvas_size x canvas_size uniform background'un merkezine yerlestirilir
-      - Sadece maske pikselleri canvas'a kopyalanir
-    Döndürür: (canvas_size, canvas_size, 3) uint8 BGR görsel.
-    """
-    crop_rgb, crop_mask = obj_tuple
-
-    resized_obj, resized_mask = resize_keep_aspect(
-        crop_rgb, crop_mask, object_size, bg_color
-    )
-
-    canvas = np.full((canvas_size, canvas_size, 3), bg_color, dtype=np.uint8)
-    offset = (canvas_size - object_size) // 2
-
-    roi = canvas[offset:offset+object_size, offset:offset+object_size]
+    roi = canvas[offset_y:offset_y+new_h, offset_x:offset_x+new_w]
     roi[resized_mask > 0] = resized_obj[resized_mask > 0]
-    canvas[offset:offset+object_size, offset:offset+object_size] = roi
+    canvas[offset_y:offset_y+new_h, offset_x:offset_x+new_w] = roi
 
     return canvas
 
 
-def process_category(coco: COCO, category_name: str, category_id: int,
-                     split_data: dict, output_dir: Path, cfg: dict):
-    """
-    Bir kategorinin tüm split'lerindeki instance'larını işler ve kaydeder.
-    """
-    img_cfg = cfg["image"]
-    canvas_size = img_cfg["canvas_size"]
-    object_size = img_cfg["object_size"]
-    bg_color    = img_cfg["background_color"]
-
-    for split_name, instances in split_data.items():
-        split_dir = output_dir / split_name / category_name
-        split_dir.mkdir(parents=True, exist_ok=True)
-
-        saved = 0
-        for inst in tqdm(instances, desc=f"  {split_name}/{category_name}", leave=False):
-            # Görseli yükle
-            img_info = coco.loadImgs(inst["image_id"])[0]
-            img_path = Path(cfg["data"]["coco_dir"]) / "images" / "train2017" / img_info["file_name"]
-
-            if not img_path.exists():
-                continue
-
-            image = cv2.imread(str(img_path))
-            if image is None:
-                continue
-
-            # Maske ile kes
-            ann = coco.loadAnns(inst["ann_id"])[0]
-            rgba = extract_masked_object(image, ann, coco)
-            if rgba is None:
-                continue
-
-            # Canvas'a yerleştir
-            canvas = place_on_canvas(rgba, object_size, canvas_size, bg_color)
-
-            # Kaydet: {ann_id}.png
-            out_path = split_dir / f"{inst['ann_id']}.png"
-            cv2.imwrite(str(out_path), canvas)
-            saved += 1
-
-        print(f"    {split_name}/{category_name}: {saved} görsel kaydedildi")
-
-
-def save_split_manifest(split_data_all: dict, output_dir: Path):
-    """
-    Her split için ann_id → kategori eşleşmesini JSON olarak kaydeder.
-    Sonraki adımlarda (composite oluşturma) kullanılır.
-    """
-    for split_name in ["train", "val", "test"]:
-        manifest = {}
-        for category_name, split_data in split_data_all.items():
-            for inst in split_data.get(split_name, []):
-                manifest[str(inst["ann_id"])] = {
-                    "category": category_name,
-                    "image_id": inst["image_id"],
-                    "bbox":     inst["bbox"],
-                    "area":     inst["area"],
-                }
-        out_path = output_dir / f"{split_name}_manifest.json"
-        with open(out_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-        print(f"  Manifest kaydedildi: {out_path} ({len(manifest)} instance)")
-
-
 def main(config_path: str):
-    cfg = load_config(config_path)
+    cfg         = load_config(config_path)
+    coil_dir    = Path(cfg["data"]["coil_dir"])
+    output_dir  = Path(cfg["data"]["output_dir"])
+    canvas_size = cfg["image"]["canvas_size"]
+    object_size = cfg["image"]["object_size"]
+    bg_color    = cfg["image"]["background_color"]
+    threshold   = cfg["image"]["bg_threshold"]
+    train_ratio = cfg["data"]["split"]["train_ratio"]
+    val_ratio   = cfg["data"]["split"]["val_ratio"]
+    seed        = cfg["data"]["split"]["random_seed"]
 
-    coco_ann_path = (
-        Path(cfg["data"]["coco_dir"]) / "annotations" / cfg["data"]["annotation_file"]
-    )
-    output_dir = Path(cfg["data"]["output_dir"])
+    target_ids   = cfg["data"]["target_obj_ids"]
+    external_ids = cfg["data"]["external_obj_ids"]
+    all_ids      = target_ids + external_ids
+
+    rng = random.Random(seed)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"COCO annotation yükleniyor: {coco_ann_path}")
-    coco = COCO(str(coco_ann_path))
+    manifest_train, manifest_val, manifest_test = {}, {}, {}
 
-    # Tüm hedef kategoriler + external flanker kategoriler
-    all_category_names = (
-        cfg["data"]["categories"] + cfg["data"]["external_flanker_categories"]
-    )
+    for obj_id in all_ids:
+        angles = list(range(0, 360, 5))  # 72 açı
+        rng.shuffle(angles)
 
-    print("\nKategori ID'leri alınıyor...")
-    name_to_id = get_category_ids(coco, all_category_names)
+        n       = len(angles)
+        n_train = int(n * train_ratio)
+        n_val   = int(n * val_ratio)
 
-    split_cfg = cfg["data"]["split"]
-    split_data_all = {}  # {category_name: {train: [...], val: [...], test: [...]}}
+        splits = [
+            ("train", angles[:n_train]),
+            ("val",   angles[n_train:n_train+n_val]),
+            ("test",  angles[n_train+n_val:]),
+        ]
 
-    print("\nInstance'lar toplanıyor ve split yapılıyor...")
-    for cat_name, cat_id in name_to_id.items():
-        instances = collect_instances(
-            coco, cat_id, cfg["image"]["min_bbox_area"]
-        )
-        print(f"  {cat_name}: {len(instances)} geçerli instance")
+        for split_name, split_angles in splits:
+            split_dir = output_dir / split_name / f"obj{obj_id}"
+            split_dir.mkdir(parents=True, exist_ok=True)
 
-        splits = split_instances(
-            instances,
-            train_ratio=split_cfg["train_ratio"],
-            val_ratio=split_cfg["val_ratio"],
-            test_ratio=split_cfg["test_ratio"],
-            seed=split_cfg["random_seed"],
-        )
-        print(f"    train={len(splits['train'])}, val={len(splits['val'])}, test={len(splits['test'])}")
-        split_data_all[cat_name] = splits
+            for angle in tqdm(split_angles,
+                              desc=f"{split_name}/obj{obj_id}", leave=False):
+                img_path = coil_dir / f"obj{obj_id}__{angle}.png"
+                if not img_path.exists():
+                    continue
 
-    print("\nGörseller işleniyor...")
-    for cat_name, cat_id in name_to_id.items():
-        print(f"\n[{cat_name}]")
-        process_category(
-            coco, cat_name, cat_id,
-            split_data_all[cat_name],
-            output_dir, cfg,
-        )
+                img = cv2.imread(str(img_path))
+                if img is None:
+                    continue
 
-    print("\nManifest'ler kaydediliyor...")
-    save_split_manifest(split_data_all, output_dir)
+                mask                    = remove_dark_bg(img, threshold)
+                cropped_img, cropped_mask = crop_to_object(img, mask)
+                canvas                  = place_on_canvas(
+                    cropped_img, cropped_mask,
+                    object_size, canvas_size, bg_color
+                )
 
-    print("\nTamamlandı.")
-    print(f"Çıktı dizini: {output_dir.resolve()}")
+                key      = f"{obj_id}_{angle}"
+                out_path = split_dir / f"{key}.png"
+                cv2.imwrite(str(out_path), canvas)
+
+                entry = {
+                    "obj_id":    obj_id,
+                    "angle":     angle,
+                    "is_target": obj_id in target_ids,
+                }
+                if split_name == "train":   manifest_train[key] = entry
+                elif split_name == "val":   manifest_val[key]   = entry
+                else:                       manifest_test[key]  = entry
+
+        print(f"obj{obj_id}: train={len([a for a in angles[:int(n*train_ratio)]])}"
+              f" val={n_val} test={n - int(n*train_ratio) - n_val}")
+
+    # Leakage kontrol
+    for split_name, split_manifest in [("val", manifest_val),
+                                        ("test", manifest_test)]:
+        overlap = set(manifest_train.keys()) & set(split_manifest.keys())
+        if overlap:
+            raise RuntimeError(f"LEAKAGE: train ∩ {split_name} = {len(overlap)} key")
+        print(f"[OK] train ∩ {split_name} = ∅")
+
+    # Manifest kaydet
+    for name, data in [("train", manifest_train),
+                       ("val",   manifest_val),
+                       ("test",  manifest_test)]:
+        out = output_dir / f"{name}_manifest.json"
+        with open(out, "w") as f:
+            json.dump(data, f, indent=2)
+
+    print(f"\nTamamlandı:")
+    print(f"  train: {len(manifest_train)}")
+    print(f"  val:   {len(manifest_val)}")
+    print(f"  test:  {len(manifest_test)}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="COCO'dan crowding dataset'i hazırla")
-    parser.add_argument("--config", type=str, default="configs/config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
     main(args.config)
