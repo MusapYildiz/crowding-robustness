@@ -367,9 +367,23 @@ def main():
                                device, ckpt_dir)
         all_profiles.append(profile)
 
-    with open(Path(cfg["evaluation"]["results_dir"]) /
-              "model_profiles.json", "w") as f:
-        json.dump(all_profiles, f, indent=2)
+    # Mevcut profilleri oku, guncelle veya ekle
+    profiles_path = Path(cfg["evaluation"]["results_dir"]) / "model_profiles.json"
+    existing = []
+    if profiles_path.exists():
+        with open(profiles_path) as f:
+            existing = json.load(f)
+
+    # Ayni model varsa guncelle, yoksa ekle
+    existing_names = {p["model"]: i for i, p in enumerate(existing)}
+    for profile in all_profiles:
+        if profile["model"] in existing_names:
+            existing[existing_names[profile["model"]]] = profile
+        else:
+            existing.append(profile)
+
+    with open(profiles_path, "w") as f:
+        json.dump(existing, f, indent=2)
     print("\nModel profilleri kaydedildi.")
 
 
