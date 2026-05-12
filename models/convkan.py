@@ -43,26 +43,56 @@ def _load_from_torch_conv_kan(model_name: str, num_classes: int,
     torch-conv-kan reposundan model yukler.
     Pretrained=True ise HuggingFace'den agirliklar indirilir.
     """
-    try:
-        from models.vgg_kan import vgg11_kan, vgg11_kan_bn
-    except ImportError:
-        try:
-            # torch-conv-kan sys.path'de olmayabilir
-            import sys, os
-            # Colab'da standart konum
-            for path in [
-                "/content/crowding-robustness/torch-conv-kan",
-                "./torch-conv-kan",
-            ]:
-                if os.path.exists(path) and path not in sys.path:
-                    sys.path.insert(0, path)
-            from models.vgg_kan import vgg11_kan, vgg11_kan_bn
-        except ImportError:
-            raise ImportError(
-                "torch-conv-kan bulunamadi.\n"
-                "git clone https://github.com/IvanDrokin/torch-conv-kan.git\n"
-                "sys.path.insert(0, './torch-conv-kan')"
-            )
+    # torch-conv-kan'i dogrudan import et
+    # NOT: torch-conv-kan sys.path'e EKLENMEMELI
+    # cunku kendi 'models/' dizini bizimkiyle catisiyor.
+    # Bunun yerine importlib ile direkt dosyadan yukluyoruz.
+    import importlib.util, sys, os
+
+    def _load_from_file(module_name, file_path):
+        spec = importlib.util.spec_from_file_location(
+            module_name, file_path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    # torch-conv-kan konumunu bul
+    possible_paths = [
+        "/content/crowding-robustness/torch-conv-kan",
+        "./torch-conv-kan",
+        os.path.join(os.path.dirname(__file__), "../torch-conv-kan"),
+    ]
+    tck_root = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            tck_root = os.path.abspath(p)
+            break
+
+    if tck_root is None:
+        raise ImportError(
+            "torch-conv-kan bulunamadi.\n"
+            "git clone https://github.com/IvanDrokin/torch-conv-kan.git"
+        )
+
+    # Gerekli bagimliliklari yukle
+    for dep in ["kan_convs", "kans"]:
+        dep_path = os.path.join(tck_root, dep)
+        if os.path.exists(dep_path + ".py"):
+            _load_from_file(dep, dep_path + ".py")
+        elif os.path.exists(dep_path):
+            # paket
+            init = os.path.join(dep_path, "__init__.py")
+            if os.path.exists(init):
+                _load_from_file(dep, init)
+
+    vgg_kan_path = os.path.join(tck_root, "models", "vgg_kan.py")
+    if not os.path.exists(vgg_kan_path):
+        raise ImportError(f"vgg_kan.py bulunamadi: {vgg_kan_path}")
+
+    vgg_kan_mod = _load_from_file("_vgg_kan_internal", vgg_kan_path)
+    vgg11_kan    = vgg_kan_mod.vgg11_kan
+    vgg11_kan_bn = vgg_kan_mod.vgg11_kan_bn
 
     if model_name == "vgg_kagn_bn_11v4":
         model = vgg11_kan_bn(num_classes=1000)
