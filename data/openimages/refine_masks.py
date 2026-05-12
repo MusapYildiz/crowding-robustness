@@ -29,24 +29,74 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_sam2():
-    """SAM2 modelini yukler."""
-    try:
-        from sam2.build_sam import build_sam2
-        from sam2.sam2_image_predictor import SAM2ImagePredictor
-    except ImportError:
-        raise ImportError(
-            "SAM2 gerekli:\n"
-            "pip install git+https://github.com/facebookresearch/sam2.git"
-        )
+def load_sam2(
+    config_file: str = "configs/sam2.1/sam2.1_hiera_s.yaml",
+    ckpt_path: str = "/content/sam2_weights/sam2.1_hiera_small.pt",
+    sam2_repo: str = "/content/sam2",
+):
+    """
+    SAM2 modelini yukler.
+
+    Kurulum:
+        git clone https://github.com/facebookresearch/sam2.git /content/sam2
+        cd /content/sam2 && pip install -e .[demo]
+        wget -P /content/sam2_weights \
+            https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
+
+    Args:
+        config_file : SAM2 konfigurasyon dosyasi
+        ckpt_path   : Model checkpoint yolu
+        sam2_repo   : torch-conv-kan ile catismayi onlemek icin
+                      /content/sam2 repo dizini (sys.path'e eklenmez,
+                      calisma dizini gecici olarak degistirilir)
+    """
+    import os, sys
+
+    # SAM2 path catismasi cozumu:
+    # sam2 repo'su /content/sam2 altinda, paket /content/sam2/sam2 altinda.
+    # sys.path'e /content/sam2 eklemek yerine gecici cwd degisimi yapiyoruz.
+    orig_dir = os.getcwd()
+    orig_path = sys.path.copy()
+
+    # sam2 ile ilgili eski modulleri temizle
+    for mod in list(sys.modules.keys()):
+        if mod == 'sam2' or mod.startswith('sam2.'):
+            del sys.modules[mod]
+
+    # sam2 path temizle, sonra site-packages'i one al
+    sys.path = [p for p in sys.path if 'sam2' not in p]
+    import site
+    for sp in reversed(site.getsitepackages()):
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"SAM2 yukleniyor... (device: {device})")
 
-    predictor = SAM2ImagePredictor.from_pretrained(
-        "facebook/sam2-hiera-large"
-    )
-    return predictor
+    try:
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        sam2_model = build_sam2(
+            config_file=config_file,
+            ckpt_path=ckpt_path,
+            device=device,
+        )
+        predictor = SAM2ImagePredictor(sam2_model)
+        print("SAM2 yuklendi.")
+        return predictor
+
+    except Exception as e:
+        raise RuntimeError(
+            f"SAM2 yuklenemedi: {e}\n"
+            "Kurulum icin:\n"
+            "  git clone https://github.com/facebookresearch/sam2.git /content/sam2\n"
+            "  cd /content/sam2 && pip install -e .[demo]\n"
+            "  wget -P /content/sam2_weights https://dl.fbaipublicfiles.com/"
+            "segment_anything_2/092824/sam2.1_hiera_small.pt"
+        )
+    finally:
+        os.chdir(orig_dir)
 
 
 def refine_mask_with_sam2(predictor, image_rgb: np.ndarray,
@@ -95,13 +145,23 @@ def process_fiftyone_dataset(cfg: dict, predictor):
     max_per_class  = cfg["data"]["max_samples_per_class"]
 
     # Mevcut dataset'i yukle
-    try:
+    # Kernel restart sonrasi dataset bellekte olmayabilir,
+    # bu durumda zoo'dan yeniden yukle
+    if fo.dataset_exists("crowding_openimages"):
         dataset = fo.load_dataset("crowding_openimages")
-    except Exception:
-        raise RuntimeError(
-            "fiftyone dataset bulunamadi. "
-            "Once download.py calistirin."
+        print(f"Dataset yuklendi: {len(dataset)} sample")
+    else:
+        print("Dataset bellekte yok, zoo'dan yeniden yukleniyor...")
+        import fiftyone.zoo as foz
+        dataset = foz.load_zoo_dataset(
+            "open-images-v7",
+            split="train",
+            label_types=["segmentations"],
+            classes=target_classes,
+            max_samples=max_per_class * len(target_classes),
+            dataset_name="crowding_openimages",
         )
+        print(f"Dataset yuklendi: {len(dataset)} sample")
 
     print(f"Toplam sample: {len(dataset)}")
 
@@ -176,15 +236,19 @@ def process_fiftyone_dataset(cfg: dict, predictor):
     return manifest
 
 
-def main(config_path: str):
+def main(config_path: str,
+         sam2_config: str = "configs/sam2.1/sam2.1_hiera_s.yaml",
+         sam2_ckpt: str = "/content/sam2_weights/sam2.1_hiera_small.pt"):
     cfg       = load_config(config_path)
-    predictor = load_sam2()
+    predictor = load_sam2(config_file=sam2_config, ckpt_path=sam2_ckpt)
     process_fiftyone_dataset(cfg, predictor)
     print("\nTamamlandi.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/config_openimages.yaml")
+    parser.add_argument("--config",      default="configs/config_openimages.yaml")
+    parser.add_argument("--sam2_config", default="configs/sam2.1/sam2.1_hiera_s.yaml")
+    parser.add_argument("--sam2_ckpt",   default="/content/sam2_weights/sam2.1_hiera_small.pt")
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, args.sam2_config, args.sam2_ckpt)
