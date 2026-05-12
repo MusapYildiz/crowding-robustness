@@ -6,149 +6,99 @@ torch-conv-kan reposundan yukler.
 
 Pretrained ImageNet-1K agirliklari HuggingFace'de mevcut:
   huggingface.co/brivangl
-
-Kaynak: Drokin, I. "Kolmogorov-Arnold Convolutions:
-        Design Principles and Empirical Studies"
-        arXiv:2407.01092 (2024)
-
-Kurulum:
-    git clone https://github.com/IvanDrokin/torch-conv-kan.git
-    pip install -r torch-conv-kan/requirements.txt
-    # sys.path'e ekle veya pip install -e torch-conv-kan
 """
 
+import os, sys, importlib, importlib.util, types
 import torch
 import torch.nn as nn
 
 
 CONVKAN_VARIANTS = {
     "vgg_kagn_bn_11v4": {
-        "model_name": "vgg_kagn_bn_11v4",
-        "hf_repo":    "brivangl/vgg_kagn_bn_11v4",
-        "params":     "7.25M",
-        "top1":       68.5,
+        "hf_repo": "brivangl/vgg_kagn_bn_11v4",
+        "builder": "vgg11_kan_bn",
     },
     "vgg_kagn_11v4": {
-        "model_name": "vgg_kagn_11v4",
-        "hf_repo":    "brivangl/vgg_kagn_11v4",
-        "params":     "~15M",
-        "top1":       61.2,
+        "hf_repo": "brivangl/vgg_kagn_11v4",
+        "builder": "vgg11_kan",
     },
 }
 
 
-def _load_from_torch_conv_kan(model_name: str, num_classes: int,
-                                pretrained: bool) -> nn.Module:
-    """
-    torch-conv-kan reposundan model yukler.
-    Pretrained=True ise HuggingFace'den agirliklar indirilir.
-    """
-    # torch-conv-kan'i dogrudan import et
-    # NOT: torch-conv-kan sys.path'e EKLENMEMELI
-    # cunku kendi 'models/' dizini bizimkiyle catisiyor.
-    # Bunun yerine importlib ile direkt dosyadan yukluyoruz.
-    import importlib.util, sys, os
-
-    def _load_from_file(module_name, file_path):
-        spec = importlib.util.spec_from_file_location(
-            module_name, file_path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-    # torch-conv-kan konumunu bul
-    possible_paths = [
+def _find_tck_root() -> str:
+    """torch-conv-kan repo dizinini bulur."""
+    candidates = [
         "/content/crowding-robustness/torch-conv-kan",
-        "./torch-conv-kan",
         os.path.join(os.path.dirname(__file__), "../torch-conv-kan"),
+        "./torch-conv-kan",
     ]
-    tck_root = None
-    for p in possible_paths:
+    for p in candidates:
         if os.path.exists(p):
-            tck_root = os.path.abspath(p)
-            break
-
-    if tck_root is None:
-        raise ImportError(
-            "torch-conv-kan bulunamadi.\n"
-            "git clone https://github.com/IvanDrokin/torch-conv-kan.git"
-        )
-
-    # Gerekli bagimliliklari yukle
-    for dep in ["kan_convs", "kans"]:
-        dep_path = os.path.join(tck_root, dep)
-        if os.path.exists(dep_path + ".py"):
-            _load_from_file(dep, dep_path + ".py")
-        elif os.path.exists(dep_path):
-            # paket
-            init = os.path.join(dep_path, "__init__.py")
-            if os.path.exists(init):
-                _load_from_file(dep, init)
-
-    vgg_kan_path = os.path.join(tck_root, "models", "vgg_kan.py")
-    if not os.path.exists(vgg_kan_path):
-        raise ImportError(f"vgg_kan.py bulunamadi: {vgg_kan_path}")
-
-    vgg_kan_mod = _load_from_file("_vgg_kan_internal", vgg_kan_path)
-    vgg11_kan    = vgg_kan_mod.vgg11_kan
-    vgg11_kan_bn = vgg_kan_mod.vgg11_kan_bn
-
-    if model_name == "vgg_kagn_bn_11v4":
-        model = vgg11_kan_bn(num_classes=1000)
-    elif model_name == "vgg_kagn_11v4":
-        model = vgg11_kan(num_classes=1000)
-    else:
-        raise ValueError(f"Bilinmeyen variant: {model_name}")
-
-    if pretrained:
-        _load_pretrained_weights(model, model_name)
-
-    # Classifier katmanini degistir
-    model = _replace_classifier(model, num_classes)
-
-    return model
+            return os.path.abspath(p)
+    raise ImportError(
+        "torch-conv-kan bulunamadi.\n"
+        "git clone https://github.com/IvanDrokin/torch-conv-kan.git"
+    )
 
 
-def _load_pretrained_weights(model: nn.Module, model_name: str):
-    """HuggingFace'den pretrained agirliklari yukler."""
+def _load_tck_modules(tck_root: str):
+    """
+    torch-conv-kan modullerini sys.path catismasi olmadan yukler.
+    
+    Yontem:
+      1. tck_root'u gecici olarak sys.path'e ekle
+      2. kans paketini tamamen yukle (submoduller dahil)
+      3. kan_convs ve models/vgg_kan'i yukle
+      4. tck_root'u sys.path'den cikar
+      (yuklenmis moduller sys.modules'de kalir)
+    """
+    # Eski eksik yuklemeleri temizle
+    for key in list(sys.modules.keys()):
+        if key in ('kans', 'kan_convs') or \
+           key.startswith('kans.') or \
+           key.startswith('kan_convs.'):
+            del sys.modules[key]
+
+    # Gecici path ekle
+    if tck_root not in sys.path:
+        sys.path.insert(0, tck_root)
+
     try:
-        from huggingface_hub import hf_hub_download
-        import os
+        # kans paketini tam yukle
+        import kans
+        if not hasattr(kans, 'RadialBasisFunction'):
+            raise ImportError("kans.RadialBasisFunction bulunamadi")
 
-        repo_id   = CONVKAN_VARIANTS[model_name]["hf_repo"]
-        ckpt_path = hf_hub_download(repo_id=repo_id,
-                                     filename="model.pth")
-        state = torch.load(ckpt_path, map_location="cpu")
+        # kan_convs yukle
+        import kan_convs
 
-        # State dict key'leri farkli olabilir
-        if "state_dict" in state:
-            state = state["state_dict"]
-        elif "model" in state:
-            state = state["model"]
+        # models/vgg_kan yukle
+        vgg_kan_path = os.path.join(tck_root, "models", "vgg_kan.py")
+        if not os.path.exists(vgg_kan_path):
+            raise ImportError(f"vgg_kan.py bulunamadi: {vgg_kan_path}")
 
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(f"  [{model_name}] Pretrained yuklendi. "
-              f"Missing={len(missing)}, Unexpected={len(unexpected)}")
+        spec = importlib.util.spec_from_file_location(
+            "_tck_vgg_kan", vgg_kan_path
+        )
+        vgg_kan_mod = importlib.util.module_from_spec(spec)
+        sys.modules["_tck_vgg_kan"] = vgg_kan_mod
+        spec.loader.exec_module(vgg_kan_mod)
 
-    except Exception as e:
-        print(f"  [WARN] {model_name} pretrained yuklenemedi: {e}")
-        print("  Scratch baslanıyor.")
+        return vgg_kan_mod
+
+    finally:
+        # tck_root'u path'den cikar (models/ catismasini onle)
+        if tck_root in sys.path:
+            sys.path.remove(tck_root)
 
 
-def _replace_classifier(model: nn.Module,
-                         num_classes: int) -> nn.Module:
-    """
-    Son classifier katmanini num_classes'a gore degistirir.
-    torch-conv-kan modellerinde classifier yapisi farkli olabilir.
-    """
-    # VGG tarzı modellerde genellikle model.classifier[-1] veya model.fc
+def _replace_classifier(model: nn.Module, num_classes: int) -> nn.Module:
+    """Son classifier katmanini num_classes'a gore degistirir."""
     replaced = False
 
     if hasattr(model, "classifier"):
         clf = model.classifier
         if isinstance(clf, nn.Sequential):
-            # Son Linear katmani bul ve degistir
             for i in range(len(clf) - 1, -1, -1):
                 if isinstance(clf[i], nn.Linear):
                     in_features = clf[i].in_features
@@ -167,18 +117,34 @@ def _replace_classifier(model: nn.Module,
             replaced = True
 
     if not replaced and hasattr(model, "fc"):
-        in_features  = model.fc.in_features
-        model.fc     = nn.Sequential(
+        in_features = model.fc.in_features
+        model.fc = nn.Sequential(
             nn.Dropout(p=0.3),
             nn.Linear(in_features, num_classes)
         )
         replaced = True
 
     if not replaced:
-        print(f"  [WARN] Classifier katmani bulunamadi, "
-              f"model degistirilmedi.")
+        print(f"  [WARN] Classifier katmani bulunamadi.")
 
     return model
+
+
+def _load_pretrained(model: nn.Module, variant: str):
+    """HuggingFace'den pretrained agirliklari yukler."""
+    try:
+        from huggingface_hub import hf_hub_download
+        repo_id   = CONVKAN_VARIANTS[variant]["hf_repo"]
+        ckpt_path = hf_hub_download(repo_id=repo_id, filename="model.pth")
+        state = torch.load(ckpt_path, map_location="cpu")
+        if "state_dict" in state: state = state["state_dict"]
+        elif "model" in state:    state = state["model"]
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(f"  [{variant}] Pretrained yuklendi. "
+              f"Missing={len(missing)}, Unexpected={len(unexpected)}")
+    except Exception as e:
+        print(f"  [WARN] {variant} pretrained yuklenemedi: {e}")
+        print("  Scratch baslanıyor.")
 
 
 def build_convkan(variant: str, num_classes: int,
@@ -197,11 +163,20 @@ def build_convkan(variant: str, num_classes: int,
             f"Secenekler: {list(CONVKAN_VARIANTS.keys())}"
         )
 
-    model = _load_from_torch_conv_kan(variant, num_classes, pretrained)
+    tck_root    = _find_tck_root()
+    vgg_kan_mod = _load_tck_modules(tck_root)
+
+    builder_name = CONVKAN_VARIANTS[variant]["builder"]
+    builder      = getattr(vgg_kan_mod, builder_name)
+    model        = builder(num_classes=1000)
+
+    if pretrained:
+        _load_pretrained(model, variant)
+
+    model = _replace_classifier(model, num_classes)
 
     if freeze_backbone:
         for name, param in model.named_parameters():
-            # Classifier disindaki her seyi dondur
             if "classifier" not in name and "fc" not in name:
                 param.requires_grad = False
 
@@ -213,21 +188,16 @@ def build_convkan(variant: str, num_classes: int,
 
 
 def unfreeze_convkan(model: nn.Module, stage: int = 1) -> None:
-    """
-    LP-FT: stage=1 -> tum model aciilr (Full Fine-Tuning)
-    """
+    """LP-FT: tum modeli ac."""
     for param in model.parameters():
         param.requires_grad = True
-
     total = sum(p.numel() for p in model.parameters())
-    print(f"  ConvKAN unfreeze (stage={stage}): "
-          f"{total:,} parametre aktif")
+    print(f"  ConvKAN unfreeze: {total:,} parametre aktif")
 
 
 def get_convkan_gradcam_layer(model: nn.Module) -> nn.Module:
-    """Grad-CAM icin hedef katman: features'in son konv katmani."""
+    """Grad-CAM icin hedef katman: son Conv2d."""
     if hasattr(model, "features"):
-        # Son Conv2d katmanini bul
         last_conv = None
         for m in model.features.modules():
             if isinstance(m, nn.Conv2d):
