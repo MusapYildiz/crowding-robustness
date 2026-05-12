@@ -44,13 +44,20 @@ def download_openimages(cfg: dict):
     print(f"  Cikti: {raw_dir}")
 
     # fiftyone ile indir
+    # fiftyone bug: dataset_dir parametresi cift geliyor
+    # Alternatif: once annotation indir, sonra gorsel indir
+    import fiftyone as fo
+
+    # Onceki dataset varsa sil
+    if fo.dataset_exists("crowding_openimages"):
+        fo.delete_dataset("crowding_openimages")
+
     dataset = foz.load_zoo_dataset(
         "open-images-v7",
         split="train",
         label_types=["segmentations"],
         classes=target_classes,
         max_samples=max_per_class * len(target_classes),
-        dataset_dir=str(raw_dir),
         dataset_name="crowding_openimages",
     )
 
