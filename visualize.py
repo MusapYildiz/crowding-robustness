@@ -97,7 +97,7 @@ def plot_spacing_accuracy(results: list, out_dir: Path):
 
     for res in results:
         model = res["model"]
-        curve = res["spacing_accuracy_curve"]
+        curve = res["spacing_ci_curve"]
         baseline = res["isolation"]["top1_acc"]
 
         spacings = sorted(float(k) for k in curve.keys())
@@ -133,7 +133,8 @@ def plot_accuracy_drop(results: list, out_dir: Path):
     for res in results:
         model    = res["model"]
         baseline = res["isolation"]["top1_acc"]
-        for ft, acc in res["flanker_type_effect"].items():
+        for ft, val in res["flanker_type_ci"].items():
+            acc = val["accuracy"] if isinstance(val, dict) else val
             drop = round((baseline - acc) / baseline, 4) if baseline > 0 else 0
             rows.append({
                 "Model":        FAMILY_LABELS.get(model, model),
