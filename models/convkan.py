@@ -72,19 +72,38 @@ def _load_tck_modules(tck_root: str):
         # kan_convs yukle
         import kan_convs
 
-        # models/vgg_kan yukle
-        vgg_kan_path = os.path.join(tck_root, "models", "vggkan.py")
-        if not os.path.exists(vgg_kan_path):
-            raise ImportError(f"vgg_kan.py bulunamadi: {vgg_kan_path}")
+        # models paketi relative import kullaniyor
+        # Bu yuzden paket olarak yuklenmeli
+        # tck_root sys.path'de iken import et
+        import importlib
+        # Onceki tck models yuklenmesini temizle
+        for key in list(sys.modules.keys()):
+            if key == 'tck_models' or key.startswith('tck_models.'):
+                del sys.modules[key]
 
+        # models paketini 'tck_models' ismiyle yukle
+        models_path = os.path.join(tck_root, "models")
         spec = importlib.util.spec_from_file_location(
-            "_tck_vgg_kan", vgg_kan_path
+            "tck_models",
+            os.path.join(models_path, "__init__.py"),
+            submodule_search_locations=[models_path]
         )
-        vgg_kan_mod = importlib.util.module_from_spec(spec)
-        sys.modules["_tck_vgg_kan"] = vgg_kan_mod
-        spec.loader.exec_module(vgg_kan_mod)
+        tck_models = importlib.util.module_from_spec(spec)
+        sys.modules["tck_models"] = tck_models
+        spec.loader.exec_module(tck_models)
 
-        return vgg_kan_mod
+        # vggkan'i tck_models.vggkan olarak yukle
+        vggkan_spec = importlib.util.spec_from_file_location(
+            "tck_models.vggkan",
+            os.path.join(models_path, "vggkan.py"),
+            submodule_search_locations=[models_path]
+        )
+        vggkan_mod = importlib.util.module_from_spec(vggkan_spec)
+        vggkan_mod.__package__ = "tck_models"
+        sys.modules["tck_models.vggkan"] = vggkan_mod
+        vggkan_spec.loader.exec_module(vggkan_mod)
+
+        return vggkan_mod
 
     finally:
         # tck_root'u path'den cikar (models/ catismasini onle)
@@ -164,10 +183,10 @@ def build_convkan(variant: str, num_classes: int,
         )
 
     tck_root    = _find_tck_root()
-    vgg_kan_mod = _load_tck_modules(tck_root)
+    vggkan_mod  = _load_tck_modules(tck_root)
 
     builder_name = CONVKAN_VARIANTS[variant]["builder"]
-    builder      = getattr(vgg_kan_mod, builder_name)
+    builder      = getattr(vggkan_mod, builder_name)
     # vggkan.py fonksiyonlari: (input_channels, num_classes, ...)
     model        = builder(input_channels=3, num_classes=1000)
 
