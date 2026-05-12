@@ -16,11 +16,11 @@ import torch.nn as nn
 CONVKAN_VARIANTS = {
     "vgg_kagn_bn_11v4": {
         "hf_repo": "brivangl/vgg_kagn_bn_11v4",
-        "builder": "vgg11_kan_bn",
+        "builder": "vggkagn_bn",
     },
     "vgg_kagn_11v4": {
         "hf_repo": "brivangl/vgg_kagn_11v4",
-        "builder": "vgg11_kan",
+        "builder": "vggkagn",
     },
 }
 
@@ -73,7 +73,7 @@ def _load_tck_modules(tck_root: str):
         import kan_convs
 
         # models/vgg_kan yukle
-        vgg_kan_path = os.path.join(tck_root, "models", "vgg_kan.py")
+        vgg_kan_path = os.path.join(tck_root, "models", "vggkan.py")
         if not os.path.exists(vgg_kan_path):
             raise ImportError(f"vgg_kan.py bulunamadi: {vgg_kan_path}")
 
@@ -168,7 +168,8 @@ def build_convkan(variant: str, num_classes: int,
 
     builder_name = CONVKAN_VARIANTS[variant]["builder"]
     builder      = getattr(vgg_kan_mod, builder_name)
-    model        = builder(num_classes=1000)
+    # vggkan.py fonksiyonlari: (input_channels, num_classes, ...)
+    model        = builder(input_channels=3, num_classes=1000)
 
     if pretrained:
         _load_pretrained(model, variant)
