@@ -1,11 +1,20 @@
 """
 train.py
 
-Tüm modelleri aynı protokolde eğitir.
+LP-FT stratejisiyle tum modelleri egitir.
+(Kumar et al., ICLR 2022)
 
-Kullanım:
-    python train.py --model resnet50 --config configs/config.yaml
-    python train.py --model all     --config configs/config.yaml
+Asama 1 - Linear Probing (LP):
+  Backbone dondurulur, sadece classifier egitilir.
+  lr = lp_lr, epoch = lp_epochs
+
+Asama 2 - Full Fine-Tuning (FT):
+  Tum model aciilr, discriminative lr uygulanir.
+  lr = ft_lr -> ft_lr_min (cosine decay), epoch = ft_epochs
+
+Kullanim:
+    python train.py --model resnet50 --config configs/config_openimages.yaml
+    python train.py --model all     --config configs/config_openimages.yaml
 """
 
 import os, time, json, argparse
@@ -13,7 +22,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import yaml
 
@@ -22,25 +31,14 @@ from models.vit     import build_vit,     unfreeze_vit
 from models.convkan import build_convkan, unfreeze_convkan
 
 
-def get_dataloaders(cfg: dict):
-    """Config'e gore dogru dataset modulunu yukler."""
-    dataset = cfg["data"].get("dataset", "coil100")
-    if dataset == "coco":
-        from data.coco.dataset import get_dataloaders as _get
-    else:
-        from data.dataset import get_dataloaders as _get
-    return _get(cfg)
-
-
 MODEL_REGISTRY = {
-    "resnet34":  ("resnet",  "resnet34"),
-    "resnet50":  ("resnet",  "resnet50"),
-    "resnet101": ("resnet",  "resnet101"),
-    "vit_s_16":  ("vit",    "vit_s_16"),
-    "vit_b_16":  ("vit",    "vit_b_16"),
-    "convkan_s": ("convkan", "convkan_s"),
-    "convkan_m": ("convkan", "convkan_m"),
-    "convkan_l": ("convkan", "convkan_l"),
+    "resnet34":         ("resnet",  "resnet34"),
+    "resnet50":         ("resnet",  "resnet50"),
+    "resnet101":        ("resnet",  "resnet101"),
+    "vit_s_16":         ("vit",    "vit_s_16"),
+    "vit_b_16":         ("vit",    "vit_b_16"),
+    "vgg_kagn_bn_11v4": ("convkan", "vgg_kagn_bn_11v4"),
+    "vgg_kagn_11v4":    ("convkan", "vgg_kagn_11v4"),
 }
 ALL_MODELS = list(MODEL_REGISTRY.keys())
 
@@ -50,29 +48,41 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def get_dataloaders(cfg: dict):
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "openimages":
+        from data.openimages.dataset import get_dataloaders as _get
+    elif dataset == "coco":
+        from data.coco.dataset import get_dataloaders as _get
+    else:
+        from data.dataset import get_dataloaders as _get
+    return _get(cfg)
+
+
+def get_num_classes(cfg: dict) -> int:
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "openimages":
+        return len(cfg["data"]["target_classes"])
+    elif dataset == "coco":
+        return len(cfg["data"]["categories"])
+    else:
+        return len(cfg["data"]["target_obj_ids"])
+
+
 def build_model(model_name: str, num_classes: int,
-                pretrained: bool, freeze_backbone: bool) -> nn.Module:
+                pretrained: bool,
+                freeze_backbone: bool) -> nn.Module:
     family, variant = MODEL_REGISTRY[model_name]
     if family == "resnet":
-        return build_resnet(variant, num_classes, pretrained, freeze_backbone)
+        return build_resnet(variant, num_classes,
+                             pretrained, freeze_backbone)
     elif family == "vit":
-        return build_vit(variant, num_classes, pretrained, freeze_backbone)
+        return build_vit(variant, num_classes,
+                          pretrained, freeze_backbone)
     elif family == "convkan":
-        return build_convkan(variant, num_classes, pretrained, freeze_backbone)
+        return build_convkan(variant, num_classes,
+                              pretrained, freeze_backbone)
     raise ValueError(f"Bilinmeyen aile: {family}")
-
-
-def unfreeze_model(model: nn.Module, model_name: str, stage: int):
-    family, _ = MODEL_REGISTRY[model_name]
-    if family == "resnet":   unfreeze_resnet(model, stage)
-    elif family == "vit":    unfreeze_vit(model, stage)
-    elif family == "convkan": unfreeze_convkan(model, stage)
-
-
-def count_parameters(model: nn.Module) -> dict:
-    total     = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return {"total": total, "trainable": trainable}
 
 
 def model_size_mb(model: nn.Module) -> float:
@@ -81,7 +91,8 @@ def model_size_mb(model: nn.Module) -> float:
     return total / (1024 ** 2)
 
 
-def measure_latency(model, device, canvas_size=224, n_runs=100) -> dict:
+def measure_latency(model, device, canvas_size=224,
+                    n_runs=100) -> dict:
     model.eval()
     dummy = torch.randn(1, 3, canvas_size, canvas_size).to(device)
     with torch.no_grad():
@@ -99,14 +110,14 @@ def measure_latency(model, device, canvas_size=224, n_runs=100) -> dict:
             "throughput_img_per_s": round(1000 / avg_ms, 1)}
 
 
-def measure_peak_gpu_ram(model, device, canvas_size, batch_size) -> float:
+def measure_peak_gpu_ram(model, device, canvas_size,
+                          batch_size) -> float:
     if device.type != "cuda": return 0.0
     torch.cuda.reset_peak_memory_stats(device)
     model.train()
     x = torch.randn(batch_size, 3, canvas_size, canvas_size).to(device)
     y = torch.zeros(batch_size, dtype=torch.long).to(device)
-    out  = model(x)
-    loss = nn.CrossEntropyLoss()(out, y)
+    loss = nn.CrossEntropyLoss()(model(x), y)
     loss.backward()
     peak = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
     model.zero_grad()
@@ -119,21 +130,25 @@ def measure_inference_ram(model, device, canvas_size) -> float:
     model.eval()
     dummy = torch.randn(1, 3, canvas_size, canvas_size).to(device)
     with torch.no_grad(): model(dummy)
-    return round(torch.cuda.max_memory_allocated(device) / (1024 ** 2), 1)
+    return round(torch.cuda.max_memory_allocated(device) / (1024**2), 1)
 
 
 def compute_flops(model, canvas_size) -> float:
     try:
         from fvcore.nn import FlopCountAnalysis
-        dummy = torch.randn(1, 3, canvas_size, canvas_size)
-        flops = FlopCountAnalysis(model.cpu(), dummy)
+        model_device = next(model.parameters()).device
+        dummy  = torch.randn(1, 3, canvas_size, canvas_size)
+        flops  = FlopCountAnalysis(model.cpu(), dummy)
         flops.unsupported_ops_warnings(False)
-        return round(flops.total() / 1e9, 2)
-    except:
+        result = round(flops.total() / 1e9, 2)
+        model.to(model_device)
+        return result
+    except Exception:
         return -1.0
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device) -> dict:
+def train_one_epoch(model, loader, optimizer, criterion,
+                    device, grad_clip) -> dict:
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     for imgs, labels in loader:
@@ -142,6 +157,8 @@ def train_one_epoch(model, loader, optimizer, criterion, device) -> dict:
         out  = model(imgs)
         loss = criterion(out, labels)
         loss.backward()
+        if grad_clip > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
         correct    += (out.argmax(1) == labels).sum().item()
@@ -158,9 +175,9 @@ def evaluate(model, loader, criterion, device) -> dict:
         imgs, labels = batch[0].to(device), batch[1].to(device)
         out  = model(imgs)
         loss = criterion(out, labels)
-        total_loss += loss.item() * imgs.size(0)
-        correct    += (out.argmax(1) == labels).sum().item()
-        top5        = out.topk(min(5, out.size(1)), dim=1).indices
+        total_loss  += loss.item() * imgs.size(0)
+        correct     += (out.argmax(1) == labels).sum().item()
+        top5         = out.topk(min(5, out.size(1)), dim=1).indices
         correct_top5 += (top5 == labels.unsqueeze(1)).any(1).sum().item()
         total += imgs.size(0)
     return {"loss":     round(total_loss/total, 4),
@@ -175,17 +192,14 @@ def train_model(model_name: str, cfg: dict,
 
     train_cfg   = cfg["training"]
     canvas_size = cfg["image"]["canvas_size"]
-    dataset = cfg["data"].get("dataset", "coil100")
-    if dataset == "coco":
-        num_classes = len(cfg["data"]["categories"])
-    else:
-        num_classes = len(cfg["data"]["target_obj_ids"])
+    num_classes = get_num_classes(cfg)
 
+    # ── Model ────────────────────────────────────────────────────
     model = build_model(model_name, num_classes,
                         train_cfg["pretrained"], True).to(device)
 
     # Profil metrikleri
-    params   = count_parameters(model)
+    params   = sum(p.numel() for p in model.parameters())
     size_mb  = model_size_mb(model)
     flops_g  = compute_flops(model, canvas_size)
     latency  = measure_latency(model, device, canvas_size)
@@ -194,69 +208,54 @@ def train_model(model_name: str, cfg: dict,
     inf_ram  = measure_inference_ram(model, device, canvas_size)
 
     profile = {
-        "model":                  model_name,
-        "params_total":           params["total"],
-        "model_size_mb":          round(size_mb, 1),
-        "flops_gflops":           flops_g,
-        "latency_ms":             latency["latency_ms"],
-        "throughput_img_per_s":   latency["throughput_img_per_s"],
-        "peak_gpu_ram_train_mb":  peak_ram,
-        "inference_ram_mb":       inf_ram,
+        "model":                 model_name,
+        "params_total":          params,
+        "model_size_mb":         round(size_mb, 1),
+        "flops_gflops":          flops_g,
+        "latency_ms":            latency["latency_ms"],
+        "throughput_img_per_s":  latency["throughput_img_per_s"],
+        "peak_gpu_ram_train_mb": peak_ram,
+        "inference_ram_mb":      inf_ram,
     }
-    print(f"  Param: {params['total']:,} | "
-          f"Boyut: {size_mb:.1f}MB | "
-          f"FLOPs: {flops_g}G | "
-          f"Latency: {latency['latency_ms']}ms")
+    print(f"  Param: {params:,} | Boyut: {size_mb:.1f}MB | "
+          f"FLOPs: {flops_g}G | Latency: {latency['latency_ms']}ms")
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                     lr=train_cfg["learning_rate"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=train_cfg["epochs"])
-
-    warmup_end  = max(3,  train_cfg["epochs"] // 6)
-    stage1_end  = max(6,  train_cfg["epochs"] // 3)
-    stage2_end  = max(12, train_cfg["epochs"] * 2 // 3)
+    criterion = nn.CrossEntropyLoss(
+        label_smoothing=train_cfg.get("label_smoothing", 0.1)
+    )
+    grad_clip = train_cfg.get("gradient_clip", 1.0)
+    patience  = train_cfg.get("early_stopping_patience", 7)
 
     best_val_acc, best_epoch, patience_cnt = 0.0, 0, 0
     history = []
 
-    for epoch in range(1, train_cfg["epochs"] + 1):
-        if epoch == warmup_end + 1:
-            print(f"\n  [Epoch {epoch}] Unfreeze stage=1")
-            unfreeze_model(model, model_name, 1)
-            optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                             lr=train_cfg["learning_rate"] * 0.1)
-            scheduler = CosineAnnealingLR(optimizer,
-                                          T_max=train_cfg["epochs"] - epoch)
-        elif epoch == stage1_end + 1:
-            print(f"\n  [Epoch {epoch}] Unfreeze stage=2")
-            unfreeze_model(model, model_name, 2)
-            optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                             lr=train_cfg["learning_rate"] * 0.01)
-            scheduler = CosineAnnealingLR(optimizer,
-                                          T_max=train_cfg["epochs"] - epoch)
-        elif epoch == stage2_end + 1:
-            print(f"\n  [Epoch {epoch}] Unfreeze stage=3")
-            unfreeze_model(model, model_name, 3)
-            optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                             lr=train_cfg["learning_rate"] * 0.001)
-            scheduler = CosineAnnealingLR(optimizer,
-                                          T_max=train_cfg["epochs"] - epoch)
+    # ── ASAMA 1: Linear Probing ───────────────────────────────────
+    print(f"\n  [LP] Linear Probing — {train_cfg['lp_epochs']} epoch")
+    optimizer = AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=train_cfg["lp_lr"],
+        weight_decay=train_cfg.get("weight_decay", 1e-4),
+    )
+    scheduler = CosineAnnealingLR(
+        optimizer, T_max=train_cfg["lp_epochs"]
+    )
 
+    for epoch in range(1, train_cfg["lp_epochs"] + 1):
         train_m = train_one_epoch(model, loaders["train"],
-                                   optimizer, criterion, device)
-        val_m   = evaluate(model, loaders["val_isolation"], criterion, device)
+                                   optimizer, criterion,
+                                   device, grad_clip)
+        val_m   = evaluate(model, loaders["val_isolation"],
+                            criterion, device)
         scheduler.step()
 
         history.append({
-            "epoch":      epoch,
+            "epoch": epoch, "phase": "lp",
             "train_loss": train_m["loss"],
             "train_acc":  train_m["accuracy"],
-            "val_loss":   val_m["loss"],
             "val_top1":   val_m["top1_acc"],
             "val_top5":   val_m["top5_acc"],
         })
-        print(f"  Epoch {epoch:3d}/{train_cfg['epochs']}  "
+        print(f"  LP Epoch {epoch:3d}/{train_cfg['lp_epochs']}  "
               f"train={train_m['accuracy']:.4f}  "
               f"val={val_m['top1_acc']:.4f}")
 
@@ -268,38 +267,90 @@ def train_model(model_name: str, cfg: dict,
                        ckpt_dir / f"{model_name}_best.pth")
         else:
             patience_cnt += 1
-            if patience_cnt >= train_cfg["early_stopping_patience"]:
-                print(f"\n  Early stopping @ epoch {epoch} "
-                      f"(best={best_val_acc:.4f} @ {best_epoch})")
+            if patience_cnt >= patience:
+                print(f"  Early stopping (LP) @ epoch {epoch}")
                 break
 
-    threshold = best_val_acc * 0.90
-    conv_epoch = next((r["epoch"] for r in history
-                       if r["val_top1"] >= threshold), best_epoch)
+    # ── ASAMA 2: Full Fine-Tuning ─────────────────────────────────
+    print(f"\n  [FT] Full Fine-Tuning — {train_cfg['ft_epochs']} epoch")
+
+    # Tum modeli ac
+    family, variant = MODEL_REGISTRY[model_name]
+    if family == "resnet":
+        unfreeze_resnet(model, stage=3)
+    elif family == "vit":
+        unfreeze_vit(model, stage=3)
+    elif family == "convkan":
+        unfreeze_convkan(model, stage=1)
+
+    optimizer = AdamW(
+        model.parameters(),
+        lr=train_cfg["ft_lr"],
+        weight_decay=train_cfg.get("weight_decay", 1e-4),
+    )
+    scheduler = CosineAnnealingLR(
+        optimizer, T_max=train_cfg["ft_epochs"],
+        eta_min=train_cfg.get("ft_lr_min", 1e-6),
+    )
+
+    patience_cnt = 0
+
+    for epoch in range(1, train_cfg["ft_epochs"] + 1):
+        train_m = train_one_epoch(model, loaders["train"],
+                                   optimizer, criterion,
+                                   device, grad_clip)
+        val_m   = evaluate(model, loaders["val_isolation"],
+                            criterion, device)
+        scheduler.step()
+
+        global_epoch = train_cfg["lp_epochs"] + epoch
+        history.append({
+            "epoch": global_epoch, "phase": "ft",
+            "train_loss": train_m["loss"],
+            "train_acc":  train_m["accuracy"],
+            "val_top1":   val_m["top1_acc"],
+            "val_top5":   val_m["top5_acc"],
+        })
+        print(f"  FT Epoch {epoch:3d}/{train_cfg['ft_epochs']}  "
+              f"train={train_m['accuracy']:.4f}  "
+              f"val={val_m['top1_acc']:.4f}")
+
+        if val_m["top1_acc"] > best_val_acc:
+            best_val_acc = val_m["top1_acc"]
+            best_epoch   = global_epoch
+            patience_cnt = 0
+            torch.save(model.state_dict(),
+                       ckpt_dir / f"{model_name}_best.pth")
+        else:
+            patience_cnt += 1
+            if patience_cnt >= patience:
+                print(f"  Early stopping (FT) @ epoch {epoch}")
+                break
 
     profile.update({
-        "best_val_acc":      best_val_acc,
-        "best_epoch":        best_epoch,
-        "convergence_epoch": conv_epoch,
+        "best_val_acc": best_val_acc,
+        "best_epoch":   best_epoch,
     })
 
     log = {"profile": profile, "history": history}
     with open(ckpt_dir / f"{model_name}_training_log.json", "w") as f:
         json.dump(log, f, indent=2)
 
-    print(f"\n  Tamamlandı. best_val_acc={best_val_acc:.4f} @ epoch {best_epoch}")
+    print(f"\n  Tamamlandi. best_val_acc={best_val_acc:.4f} "
+          f"@ epoch {best_epoch}")
     return profile
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",  default="resnet50")
-    parser.add_argument("--config", default="configs/config.yaml")
+    parser.add_argument("--config", default="configs/config_openimages.yaml")
     args = parser.parse_args()
 
     cfg    = load_config(args.config)
     device = torch.device(
-        cfg["training"]["device"] if torch.cuda.is_available() else "cpu"
+        cfg["training"]["device"]
+        if torch.cuda.is_available() else "cpu"
     )
     print(f"Device: {device}")
 
@@ -307,14 +358,17 @@ def main():
     ckpt_dir = Path(cfg["evaluation"]["results_dir"]) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    models_to_train = ALL_MODELS if args.model == "all" else [args.model]
+    models_to_train = (ALL_MODELS if args.model == "all"
+                       else [args.model])
 
     all_profiles = []
     for model_name in models_to_train:
-        profile = train_model(model_name, cfg, loaders, device, ckpt_dir)
+        profile = train_model(model_name, cfg, loaders,
+                               device, ckpt_dir)
         all_profiles.append(profile)
 
-    with open(Path(cfg["evaluation"]["results_dir"]) / "model_profiles.json", "w") as f:
+    with open(Path(cfg["evaluation"]["results_dir"]) /
+              "model_profiles.json", "w") as f:
         json.dump(all_profiles, f, indent=2)
     print("\nModel profilleri kaydedildi.")
 

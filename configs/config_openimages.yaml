@@ -1,0 +1,102 @@
+data:
+  dataset: "openimages"
+  output_dir: "./dataset_openimages"
+
+  target_classes:
+    - Person
+    - Car
+    - Dog
+    - Cat
+    - Chair
+    - Bottle
+    - Cup
+    - Book
+    - Bicycle
+    - Laptop
+    - Horse
+    - Bird
+    - Sheep
+    - Elephant
+    - Bear
+    - Motorcycle
+    - Truck
+    - Bus
+    - Airplane
+    - Boat
+    - Couch
+    - Bed
+    - Sink
+    - Toilet
+    - Refrigerator
+    - Pizza
+    - Cake
+    - Backpack
+    - Umbrella
+    - Clock
+
+  max_samples_per_class: 500
+
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    random_seed: 42
+
+  samples_per_condition: 50
+
+image:
+  canvas_size: 224
+  object_long_edge: 80        # uzun kenar px; kısa kenar orantılı
+  background_color: 0         # siyah
+  min_mask_ratio: 0.15        # bbox alanının en az %15i maske olmalı
+  min_color_std: 8.0          # masked crop renk std — çok koyu instance elenir
+  sam2_refine: true           # SAM2 ile maske iyileştirme
+
+spacing:
+  pixels_per_degree: 40       # 1° = 40px
+  degrees: [2, 2.3, 2.5, 2.7, 3]
+  measurement: "center_to_center"
+
+flanker:
+  types:
+    - congruent               # aynı sınıf flanker
+    - incongruent             # farklı sınıf flanker (veri setinden)
+    - external                # veri setinden tamamen farklı (harici nesneler)
+  same_flanker_both_sides: true
+  allow_partial: true         # canvas dışına taşan flanker kırpılır
+
+training:
+  models:
+    - resnet34
+    - resnet50
+    - resnet101
+    - vit_s_16
+    - vit_b_16
+    - vgg_kagn_bn_11v4
+    - vgg_kagn_11v4
+  pretrained: true
+  # LP-FT stratejisi (Kumar et al., ICLR 2022)
+  lp_epochs: 15               # Linear Probing aşaması
+  ft_epochs: 30               # Full Fine-Tuning aşaması
+  lp_lr: 0.001                # LP learning rate
+  ft_lr: 0.0001               # FT başlangıç learning rate
+  ft_lr_min: 0.000001         # FT minimum learning rate (cosine decay)
+  optimizer: "adamw"
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  label_smoothing: 0.1
+  early_stopping_patience: 7
+  batch_size: 32
+  num_workers: 4
+  device: "cuda"
+
+evaluation:
+  metrics:
+    - crowding_index
+    - spacing_ci_curve
+    - per_class_ci
+    - congruent_vs_incongruent
+    - external_effect
+    - ece
+    - confusion_matrix
+  results_dir: "./results_openimages"
