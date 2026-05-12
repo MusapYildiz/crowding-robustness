@@ -188,16 +188,16 @@ def plot_accuracy_drop(results: list, out_dir: Path):
 
 def plot_per_class_heatmap(results: list, out_dir: Path):
     models     = [FAMILY_LABELS.get(r["model"], r["model"]) for r in results]
-    target_obj_ids = list(results[0]["per_class_accuracy"].keys()) if results else []
+    categories = list(results[0]["per_class_accuracy"].keys()) if results else []
 
     matrix = np.array([
-        [r["per_class_accuracy"].get(cat, 0) for cat in target_obj_ids]
+        [r["per_class_accuracy"].get(cat, 0) for cat in categories]
         for r in results
     ])
 
-    fig, ax = plt.subplots(figsize=(max(8, len(target_obj_ids)), max(4, len(models) * 0.6)))
+    fig, ax = plt.subplots(figsize=(max(8, len(categories)), max(4, len(models) * 0.6)))
     sns.heatmap(matrix, annot=True, fmt=".2f",
-                xticklabels=target_obj_ids, yticklabels=models,
+                xticklabels=categories, yticklabels=models,
                 cmap="RdYlGn", vmin=0, vmax=1, ax=ax,
                 linewidths=0.3, linecolor="white")
     ax.set_title("Per-Class Accuracy (Crowding Test)")
@@ -214,7 +214,7 @@ def plot_per_class_heatmap(results: list, out_dir: Path):
 
 # ── 4. Confusion matrix ──────────────────────────────────────────────────────
 
-def plot_confusion_matrices(results: list, target_obj_ids: list, out_dir: Path):
+def plot_confusion_matrices(results: list, categories: list, out_dir: Path):
     n = len(results)
     cols = min(3, n)
     rows = (n + cols - 1) // cols
@@ -229,7 +229,7 @@ def plot_confusion_matrices(results: list, target_obj_ids: list, out_dir: Path):
         cm_norm  = cm / row_sums
 
         sns.heatmap(cm_norm, annot=True, fmt=".2f",
-                    xticklabels=target_obj_ids, yticklabels=target_obj_ids,
+                    xticklabels=categories, yticklabels=categories,
                     cmap="Blues", vmin=0, vmax=1, ax=axes[i],
                     linewidths=0.2, cbar=False)
         axes[i].set_title(FAMILY_LABELS.get(res["model"], res["model"]),
@@ -451,8 +451,14 @@ def plot_gradcam(model_name: str, cfg: dict,
     from models.vit     import build_vit,     get_vit_gradcam_layer
     from models.convkan import build_convkan
 
-    target_obj_ids  = cfg["data"]["target_obj_ids"]
-    num_classes = len(target_obj_ids)
+    dataset_type = cfg["data"].get("dataset", "coil100")
+    if dataset_type == "openimages":
+        categories = cfg["data"]["target_classes"]
+    elif dataset_type == "coco":
+        categories = cfg["data"]["categories"]
+    else:
+        categories = [str(i) for i in cfg["data"]["target_obj_ids"]]
+    num_classes = len(categories)
     dataset_dir = cfg["data"]["output_dir"]
     composite_dir = str(Path(dataset_dir) / "composites")
     canvas_size = cfg["image"]["canvas_size"]
@@ -487,9 +493,9 @@ def plot_gradcam(model_name: str, cfg: dict,
     transform = default_transform(canvas_size)
 
     # Isolation örnekleri
-    iso_ds = IsolationDataset(dataset_dir, "test", target_obj_ids, transform)
+    iso_ds = IsolationDataset(dataset_dir, "test", categories, transform)
     # Crowding örnekleri (same_class, 2deg)
-    crowd_ds = CrowdingDataset(composite_dir, "test", target_obj_ids,
+    crowd_ds = CrowdingDataset(composite_dir, "test", categories,
                                flanker_types=["same_class"],
                                spacing_degrees=[2.0],
                                transform=transform)
@@ -530,9 +536,9 @@ def plot_gradcam(model_name: str, cfg: dict,
 
         # Çiz
         for j, (img, title) in enumerate([
-            (iso_rgb,       f"Isolation\n({target_obj_ids[iso_label]})"),
+            (iso_rgb,       f"Isolation\n({categories[iso_label]})"),
             (iso_overlay,   "Grad-CAM\n(Isolation)"),
-            (crowd_rgb,     f"Crowded (2°)\n({target_obj_ids[iso_label]})"),
+            (crowd_rgb,     f"Crowded (2°)\n({categories[iso_label]})"),
             (crowd_overlay, "Grad-CAM\n(Crowded)"),
         ]):
             axes[i][j].imshow(img)
@@ -569,7 +575,13 @@ def main():
 
     results  = load_eval_results(results_dir)
     profiles = load_profiles(results_dir)
-    target_obj_ids = cfg["data"]["target_obj_ids"]
+    dataset = cfg["data"].get("dataset", "coil100")
+    if dataset == "openimages":
+        categories = cfg["data"]["target_classes"]
+    elif dataset == "coco":
+        categories = cfg["data"]["categories"]
+    else:
+        categories = [str(i) for i in cfg["data"]["target_obj_ids"]]
 
     if not results:
         print("Değerlendirme sonucu bulunamadı. Önce evaluate.py çalıştırın.")
@@ -580,7 +592,7 @@ def main():
     plot_spacing_accuracy(results, out_dir)
     plot_accuracy_drop(results, out_dir)
     plot_per_class_heatmap(results, out_dir)
-    plot_confusion_matrices(results, target_obj_ids, out_dir)
+    plot_confusion_matrices(results, categories, out_dir)
     plot_model_profile_table(profiles, out_dir)
     plot_calibration(results, out_dir)
     plot_robustness_index(results, out_dir)
