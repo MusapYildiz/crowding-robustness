@@ -34,8 +34,9 @@ MODEL_REGISTRY = {
     "resnet101":        ("resnet",  "resnet101"),
     "vit_s_16":         ("vit",    "vit_s_16"),
     "vit_b_16":         ("vit",    "vit_b_16"),
-    "vgg_kagn_bn_11v4": ("convkan", "vgg_kagn_bn_11v4"),
-    "vgg_kagn_11v4":    ("convkan", "vgg_kagn_11v4"),
+    "vgg_kagn11_v2":      ("convkan", "vgg_kagn11_v2"),
+    "vgg_kagn11_v4":      ("convkan", "vgg_kagn11_v4"),
+    "vgg_kagn_bn11sa_v4": ("convkan", "vgg_kagn_bn11sa_v4"),
 }
 
 

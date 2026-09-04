@@ -69,8 +69,9 @@ training:
   - resnet101
   - vit_s_16
   - vit_b_16
-  - vgg_kagn_bn_11v4
-  - vgg_kagn_11v4
+  - vgg_kagn11_v2
+  - vgg_kagn11_v4
+  - vgg_kagn_bn11sa_v4
   pretrained: true
   lp_epochs: 15
   ft_epochs: 30

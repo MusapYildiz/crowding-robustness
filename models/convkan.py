@@ -1,26 +1,52 @@
 """
 models/convkan.py
 
-VGG KAGN BN 11v4 ve VGG KAGN 11v4 modellerini
-torch-conv-kan reposundan yukler.
+VGG KAGN modellerini torch-conv-kan reposundan yukler.
 
-Pretrained ImageNet-1K agirliklari HuggingFace'de mevcut:
-  huggingface.co/brivangl
+Pretrained ImageNet-1K agirliklari HuggingFace'de mevcut (brivangl):
+  huggingface.co/brivangl/vgg_kagn11_v2        (24.65M param, top-1 %59.1)
+  huggingface.co/brivangl/vgg_kagn11_v4        (41.42M param)
+  huggingface.co/brivangl/vgg_kagn_bn11sa_v4   (12.56M param, top-1 %70.68, self-attention)
+
+Her repo'da SADECE config.json + model.safetensors var (model.pth degil).
+Mimari kwargs'lari asagida her varyant icin repo'nun kendi config.json'undan
+birebir kopyalanmistir -- yanlis kwargs state_dict shape mismatch'e yol acar.
 """
 
-import os, sys, importlib, importlib.util, types
+import os, sys, importlib, importlib.util
 import torch
 import torch.nn as nn
 
 
 CONVKAN_VARIANTS = {
-    "vgg_kagn_bn_11v4": {
-        "hf_repo": "brivangl/vgg_kagn_bn_11v4",
-        "builder": "vggkagn_bn",
-    },
-    "vgg_kagn_11v4": {
-        "hf_repo": "brivangl/vgg_kagn_11v4",
+    "vgg_kagn11_v2": {
+        "hf_repo": "brivangl/vgg_kagn11_v2",
         "builder": "vggkagn",
+        "kwargs": dict(
+            groups=1, degree=5, dropout=0.15, l1_decay=0.0,
+            dropout_linear=0.25, vgg_type="VGG11v2", head_type="Linear",
+            expected_feature_shape=(1, 1), width_scale=2, affine=True,
+        ),
+    },
+    "vgg_kagn11_v4": {
+        "hf_repo": "brivangl/vgg_kagn11_v4",
+        "builder": "vggkagn",
+        "kwargs": dict(
+            groups=1, degree=5, dropout=0.15, l1_decay=0.0,
+            dropout_linear=0.25, vgg_type="VGG11v4", head_type="Linear",
+            expected_feature_shape=(1, 1), width_scale=2, affine=True,
+        ),
+    },
+    "vgg_kagn_bn11sa_v4": {
+        "hf_repo": "brivangl/vgg_kagn_bn11sa_v4",
+        "builder": "vggkagn_bn",
+        "kwargs": dict(
+            groups=1, degree=5, dropout=0.05, l1_decay=0.0,
+            dropout_linear=0.25, vgg_type="VGG11v4", head_type="Linear",
+            expected_feature_shape=(1, 1), width_scale=2, affine=True,
+            last_attention=True, sa_inner_projection=None,
+            norm_layer=nn.BatchNorm2d,
+        ),
     },
 }
 
@@ -44,7 +70,7 @@ def _find_tck_root() -> str:
 def _load_tck_modules(tck_root: str):
     """
     torch-conv-kan modullerini sys.path catismasi olmadan yukler.
-    
+
     Yontem:
       1. tck_root'u gecici olarak sys.path'e ekle
       2. kans paketini tamamen yukle (submoduller dahil)
@@ -149,21 +175,31 @@ def _replace_classifier(model: nn.Module, num_classes: int) -> nn.Module:
     return model
 
 
-def _load_pretrained(model: nn.Module, variant: str):
-    """HuggingFace'den pretrained agirliklari yukler."""
-    try:
-        from huggingface_hub import hf_hub_download
-        repo_id   = CONVKAN_VARIANTS[variant]["hf_repo"]
-        ckpt_path = hf_hub_download(repo_id=repo_id, filename="model.pth")
-        state = torch.load(ckpt_path, map_location="cpu")
-        if "state_dict" in state: state = state["state_dict"]
-        elif "model" in state:    state = state["model"]
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(f"  [{variant}] Pretrained yuklendi. "
-              f"Missing={len(missing)}, Unexpected={len(unexpected)}")
-    except Exception as e:
-        print(f"  [WARN] {variant} pretrained yuklenemedi: {e}")
-        print("  Scratch baslanıyor.")
+def _load_pretrained(model: nn.Module, variant: str) -> None:
+    """
+    HuggingFace'den pretrained agirliklari yukler (model.safetensors).
+
+    Yukleme basarisiz olursa veya state_dict mimariyle tam eslesmezse
+    ACIKCA hata firlatir -- sessiz "scratch'e dus" davranisi
+    (onceki bug'in kok nedeniydi) burada bilincli olarak KALDIRILDI.
+    """
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+
+    repo_id   = CONVKAN_VARIANTS[variant]["hf_repo"]
+    ckpt_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
+    state     = load_file(ckpt_path)
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"[{variant}] pretrained state_dict mimariyle eslesmedi.\n"
+            f"  Missing({len(missing)}): {missing[:5]}\n"
+            f"  Unexpected({len(unexpected)}): {unexpected[:5]}\n"
+            f"  CONVKAN_VARIANTS['{variant}']['kwargs'] repo'nun config.json'u "
+            f"ile birebir uyusmali."
+        )
+    print(f"  [{variant}] Pretrained yuklendi (tam eslesme): {repo_id}")
 
 
 def build_convkan(variant: str, num_classes: int,
@@ -171,7 +207,7 @@ def build_convkan(variant: str, num_classes: int,
                   freeze_backbone: bool = True) -> nn.Module:
     """
     Args:
-        variant         : "vgg_kagn_bn_11v4" | "vgg_kagn_11v4"
+        variant         : CONVKAN_VARIANTS anahtarlarindan biri
         num_classes     : cikis sinif sayisi
         pretrained      : HuggingFace'den ImageNet agirliklari yukle
         freeze_backbone : True -> sadece classifier egitilir (LP asama)
@@ -185,10 +221,12 @@ def build_convkan(variant: str, num_classes: int,
     tck_root    = _find_tck_root()
     vggkan_mod  = _load_tck_modules(tck_root)
 
-    builder_name = CONVKAN_VARIANTS[variant]["builder"]
-    builder      = getattr(vggkan_mod, builder_name)
+    spec         = CONVKAN_VARIANTS[variant]
+    builder      = getattr(vggkan_mod, spec["builder"])
     # vggkan.py fonksiyonlari: (input_channels, num_classes, ...)
-    model        = builder(input_channels=3, num_classes=1000)
+    # Pretrained agirlik 1000 sinif icin -- once 1000 ile insa edilir,
+    # sonra classifier num_classes'a degistirilir.
+    model        = builder(input_channels=3, num_classes=1000, **spec["kwargs"])
 
     if pretrained:
         _load_pretrained(model, variant)

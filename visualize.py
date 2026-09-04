@@ -36,11 +36,9 @@ PALETTE = {
     "resnet101":        "#1E3A8A",
     "vit_s_16":         "#F28E2B",
     "vit_b_16":         "#B45309",
-    "vgg_kagn_bn_11v4": "#59A14F",
-    "vgg_kagn_11v4":    "#166534",
-    "convkan_s":        "#59A14F",
-    "convkan_m":        "#16A34A",
-    "convkan_l":        "#166534",
+    "vgg_kagn11_v2":      "#86EFAC",
+    "vgg_kagn11_v4":      "#22C55E",
+    "vgg_kagn_bn11sa_v4": "#166534",
 }
 
 LABELS = {
@@ -49,11 +47,9 @@ LABELS = {
     "resnet101":        "ResNet-101 (CNN)",
     "vit_s_16":         "ViT-S/16 (Transformer)",
     "vit_b_16":         "ViT-B/16 (Transformer)",
-    "vgg_kagn_bn_11v4": "VGG KAGN-BN (KAN)",
-    "vgg_kagn_11v4":    "VGG KAGN (KAN)",
-    "convkan_s":        "ConvKAN-S (KAN)",
-    "convkan_m":        "ConvKAN-M (KAN)",
-    "convkan_l":        "ConvKAN-L (KAN)",
+    "vgg_kagn11_v2":      "VGG KAGN-11v2 (KAN)",
+    "vgg_kagn11_v4":      "VGG KAGN-11v4 (KAN)",
+    "vgg_kagn_bn11sa_v4": "VGG KAGN-BN-SA-11v4 (KAN)",
 }
 
 plt.rcParams.update({
