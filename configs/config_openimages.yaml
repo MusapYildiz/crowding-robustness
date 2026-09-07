@@ -69,6 +69,8 @@ training:
   - resnet101
   - vit_s_16
   - vit_b_16
+  - swin_t
+  - swin_s
   - vgg_kagn11_v2
   - vgg_kagn11_v4
   - vgg_kagn_bn11sa_v4

@@ -34,6 +34,8 @@ MODEL_REGISTRY = {
     "resnet101":        ("resnet",  "resnet101"),
     "vit_s_16":         ("vit",    "vit_s_16"),
     "vit_b_16":         ("vit",    "vit_b_16"),
+    "swin_t":             ("swin",    "swin_t"),
+    "swin_s":             ("swin",    "swin_s"),
     "vgg_kagn11_v2":      ("convkan", "vgg_kagn11_v2"),
     "vgg_kagn11_v4":      ("convkan", "vgg_kagn11_v4"),
     "vgg_kagn_bn11sa_v4": ("convkan", "vgg_kagn_bn11sa_v4"),
@@ -75,6 +77,7 @@ def get_target_labels(cfg: dict):
 def load_model(model_name, num_classes, ckpt_path, device):
     from models.resnet  import build_resnet
     from models.vit     import build_vit
+    from models.swin    import build_swin
     from models.convkan import build_convkan
 
     family, variant = MODEL_REGISTRY[model_name]
@@ -82,6 +85,8 @@ def load_model(model_name, num_classes, ckpt_path, device):
         model = build_resnet(variant, num_classes, False, False)
     elif family == "vit":
         model = build_vit(variant, num_classes, False, False)
+    elif family == "swin":
+        model = build_swin(variant, num_classes, False, False)
     elif family == "convkan":
         model = build_convkan(variant, num_classes, False, False)
 

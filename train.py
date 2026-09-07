@@ -28,6 +28,7 @@ import yaml
 
 from models.resnet  import build_resnet,  unfreeze_resnet
 from models.vit     import build_vit,     unfreeze_vit
+from models.swin    import build_swin,    unfreeze_swin
 from models.convkan import build_convkan, unfreeze_convkan
 
 
@@ -37,6 +38,8 @@ MODEL_REGISTRY = {
     "resnet101":        ("resnet",  "resnet101"),
     "vit_s_16":         ("vit",    "vit_s_16"),
     "vit_b_16":         ("vit",    "vit_b_16"),
+    "swin_t":             ("swin",    "swin_t"),
+    "swin_s":             ("swin",    "swin_s"),
     "vgg_kagn11_v2":      ("convkan", "vgg_kagn11_v2"),
     "vgg_kagn11_v4":      ("convkan", "vgg_kagn11_v4"),
     "vgg_kagn_bn11sa_v4": ("convkan", "vgg_kagn_bn11sa_v4"),
@@ -80,6 +83,9 @@ def build_model(model_name: str, num_classes: int,
     elif family == "vit":
         return build_vit(variant, num_classes,
                           pretrained, freeze_backbone)
+    elif family == "swin":
+        return build_swin(variant, num_classes,
+                           pretrained, freeze_backbone)
     elif family == "convkan":
         return build_convkan(variant, num_classes,
                               pretrained, freeze_backbone)
@@ -281,6 +287,8 @@ def train_model(model_name: str, cfg: dict,
         unfreeze_resnet(model, stage=3)
     elif family == "vit":
         unfreeze_vit(model, stage=3)
+    elif family == "swin":
+        unfreeze_swin(model, stage=3)
     elif family == "convkan":
         unfreeze_convkan(model, stage=1)
 
