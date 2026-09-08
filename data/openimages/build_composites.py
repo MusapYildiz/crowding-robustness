@@ -118,7 +118,8 @@ def place_flanker_on_canvas(canvas: np.ndarray,
     canvas_roi  = canvas[cy0:cy1, cx0:cx1]
 
     # Sadece background olmayan pikselleri kopyala
-    mask = np.any(flanker_roi > bg_color + 10, axis=2)
+    # (bg_color'dan MUTLAK farka bakilir -- koyu/acik her arka plan icin calisir)
+    mask = np.any(np.abs(flanker_roi.astype(np.int16) - bg_color) > 10, axis=2)
     canvas_roi[mask] = flanker_roi[mask]
     canvas[cy0:cy1, cx0:cx1] = canvas_roi
     return canvas

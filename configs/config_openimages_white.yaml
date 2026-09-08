@@ -1,0 +1,100 @@
+data:
+  dataset: openimages
+  output_dir: ./dataset_openimages_white
+  target_classes:
+  - Car
+  - Person
+  - Bottle
+  - Dog
+  - Airplane
+  - Bird
+  - Motorcycle
+  - Horse
+  - Cat
+  - Book
+  - Truck
+  - Bus
+  - Laptop
+  - Cake
+  - Elephant
+  - Backpack
+  - Sheep
+  - Couch
+  - Pizza
+  - Toilet
+  - Clock
+  - Giraffe
+  - Zebra
+  - Bear
+  - Tiger
+  - Traffic light
+  - Stop sign
+  - Fire hydrant
+  - Skateboard
+  - Suitcase
+  max_samples_per_class: 500
+  split:
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+    random_seed: 42
+  samples_per_condition: 50
+image:
+  canvas_size: 224
+  object_long_edge: 80
+  background_color: 255
+  min_mask_ratio: 0.15
+  min_color_std: 8.0
+  sam2_refine: true
+spacing:
+  pixels_per_degree: 40
+  degrees:
+  - 2
+  - 2.3
+  - 2.5
+  - 2.7
+  - 3
+  measurement: center_to_center
+flanker:
+  types:
+  - congruent
+  - incongruent
+  - external
+  same_flanker_both_sides: true
+  allow_partial: true
+training:
+  models:
+  - resnet34
+  - resnet50
+  - resnet101
+  - vit_s_16
+  - vit_b_16
+  - swin_t
+  - swin_s
+  - vgg_kagn11_v2
+  - vgg_kagn11_v4
+  - vgg_kagn_bn11sa_v4
+  pretrained: true
+  lp_epochs: 15
+  ft_epochs: 30
+  lp_lr: 0.001
+  ft_lr: 0.0001
+  ft_lr_min: 1.0e-06
+  optimizer: adamw
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  label_smoothing: 0.1
+  early_stopping_patience: 7
+  batch_size: 32
+  num_workers: 4
+  device: cuda
+evaluation:
+  metrics:
+  - crowding_index
+  - spacing_ci_curve
+  - per_class_ci
+  - congruent_vs_incongruent
+  - external_effect
+  - ece
+  - confusion_matrix
+  results_dir: ./results_openimages_white
